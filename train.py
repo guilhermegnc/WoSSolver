@@ -15,7 +15,7 @@ import json
 from segmentar import segment_letters as external_segment_letters, get_tile_color_images
 
 class LetterDetectionCNN:
-    def __init__(self, img_size=64, num_classes=26):
+    def __init__(self, img_size=64, num_classes=27):
         """
         Inicializa o sistema de detecção de letras
         
@@ -108,10 +108,11 @@ class LetterDetectionCNN:
         for img_file in sorted(os.listdir(dataset_path)):
             if img_file.endswith(('.png', '.jpg', '.jpeg')):
                 # Extrair letra do nome do arquivo
-                label = img_file.split('.')[0].upper()
+                raw_label = img_file.split('.')[0].upper()
+                label = '?' if raw_label == 'HIDDEN' else raw_label
                 
                 # Verificar se é uma letra válida (A-Z)
-                if len(label) == 1 and label.isalpha():
+                if (len(label) == 1 and label.isalpha()) or label == '?':
                     if label not in self.label_map:
                         self.label_map[label] = len(self.label_map)
                     
@@ -256,7 +257,7 @@ class LetterDetectionCNN:
         
         # Dividir em treino e validação
         X_train, X_val, y_train, y_val = train_test_split(
-            X, y_categorical, test_size=validation_split, random_state=42, stratify=y_categorical
+            X, y_categorical, test_size=validation_split, random_state=42, stratify=y
         )
         
         print(f"\nDados de treino: {X_train.shape}")
@@ -521,31 +522,64 @@ class LetterDetectionCNN:
 # Exemplo de uso
 if __name__ == "__main__":
     # Inicializar o sistema
-    detector = LetterDetectionCNN(img_size=64, num_classes=26)
+    detector = LetterDetectionCNN(img_size=64, num_classes=27)
     
     # Construir o modelo
-    detector.build_model()
+    """ detector.build_model() """
     
     # TREINAR O MODELO
     # Substitua pelo caminho do seu dataset de letras individuais
-    dataset_path = r"c:\Users\Guilherme\Downloads\Nova pasta (2)\treino\dataset"
+    dataset_path = r"C:\dev\WoSSolver\dataset"
     
     """ 
     print("\n" + "="*60)
     print("INICIANDO TREINAMENTO")
-    print("="*60) """
+    print("="*60)
     
     # Treinar
-    """ history = detector.train(
+    history = detector.train(
         dataset_path=dataset_path,
         epochs=50,
         batch_size=32,
         validation_split=0.2
-    ) """
-    
+    )
+
+     """
     # Salvar modelo
     detector.load_model('letter_detector_final.h5')
+
+    detector.model.predict(np.zeros((1, detector.img_size, detector.img_size, 1)))
+
+    if "?" not in detector.label_map:
+        detector.label_map["?"] = len(detector.label_map)
+        print("Classe '?' adicionada ao label_map:", detector.label_map)
+
+    for layer in detector.model.layers[:-1]:
+        layer.trainable = False
+
+    from tensorflow.keras import layers, models
+
+    x = detector.model.layers[-2].output
+    new_output = layers.Dense(27, activation='softmax', name='new_predictions')(x)
+
+    detector.model = models.Model(inputs=detector.model.inputs, outputs=new_output)
+
+    detector.model.compile(
+        optimizer='adam',
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    history = detector.train(
+        dataset_path=dataset_path,
+        epochs=20,   # 20 é mais do que suficiente
+        batch_size=32,
+        validation_split=0.2
+    )
     
+    detector.save_model('letter_detector_with_question.h5')
+
+    """ 
     # FAZER PREDIÇÕES
     print("\n" + "="*60)
     print("FAZENDO PREDIÇÕES")
@@ -564,3 +598,4 @@ if __name__ == "__main__":
     print("="*60)
     for i, pred in enumerate(predictions):
         print(f"Letra {i+1}: {pred['letter']} (Confiança: {pred['confidence']:.2%})")
+ """

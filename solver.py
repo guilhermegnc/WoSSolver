@@ -193,10 +193,10 @@ class WordsStreamSolver:
         self._carregar_dicionario()
 
     def _baixar_dicionario(self) -> Set[str]:
-        """Tenta baixar dicionários públicos em PT-BR. Retorna conjunto de palavras (maiúsculas)."""
+        """Tenta baixar dicionários públicos em PT-BR. Retorna conjunto de palavras."""
         urls = [
-            "https://raw.githubusercontent.com/fserb/pt-br/master/palavras.txt",
-            "https://raw.githubusercontent.com/pythonprobr/palavras/master/palavras.txt",
+            "https://www.ime.usp.br/~pf/dicios/br-utf8.txt",
+            #"https://raw.githubusercontent.com/pythonprobr/palavras/master/palavras.txt",
         ]
 
         for url in urls:
@@ -821,10 +821,10 @@ class WordsStreamGUI:
                 self.text_resultados.insert(tk.END, texto_linha)
             self.text_resultados.insert(tk.END, "\n")
 
-        palavra_mais_longa = palavras[0]
+        """ palavra_mais_longa = palavras[0]
         self.text_resultados.insert(tk.END, "\n" + "="*80 + "\n")
         self.text_resultados.insert(tk.END, f"🏆 PALAVRA MAIS LONGA: {palavra_mais_longa.lower()} ({len(palavra_mais_longa)} letras)\n", 'destaque')
-        self.text_resultados.insert(tk.END, "="*80 + "\n")
+        self.text_resultados.insert(tk.END, "="*80 + "\n") """
         self.text_resultados.config(state='disabled')
 
     def copiar_resultados(self):
@@ -854,7 +854,7 @@ class WordsStreamGUI:
             m = re.findall(r"[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ]+", palavra.upper())
             if not m:
                 return
-            palavra_clean = m[0]
+            palavra_clean = m[0].lower()
 
             # copiar para área de transferência
             self.root.clipboard_clear()
