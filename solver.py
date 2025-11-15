@@ -61,7 +61,7 @@ except Exception:
 
 # Imports for segmentation
 try:
-    from segmentar import segment_letters, get_tile_color_images
+    from segment import segment_letters, get_tile_color_images
     SEGMENTATION_AVAILABLE = True
 except Exception:
     SEGMENTATION_AVAILABLE = False
