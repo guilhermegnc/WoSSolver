@@ -11,6 +11,11 @@ Melhorias aplicadas:
 - Botões para salvar resultados, copiar para área de transferência e limpar
 - Mensagens de status mais claras e proteção contra múltiplos cliques
 
+Adições nesta versão:
+- Suporte explícito para o símbolo '?' (letra oculta do jogo)
+- Teste de todas as letras A–Z quando '?' estiver presente para gerar
+  probabilidades e listar palavras possíveis por letra
+
 Requerimentos:
 - Python 3.8+
 - pip install pillow numpy tensorflow opencv-python
@@ -20,7 +25,6 @@ Modelos pré-treinados necessários:
 - label_map.json (mapa de classes)
 
 """
-
 from __future__ import annotations
 
 import tkinter as tk
@@ -66,6 +70,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(mes
 logger = logging.getLogger(__name__)
 
 
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for Nuitka """
+    if getattr(sys, 'frozen', False):
+        # Running as a bundled executable (Nuitka)
+        base_path = os.path.dirname(sys.executable)
+    else:
+        # Running as a normal script
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
 class TrieNode:
     """Nó da estrutura Trie para busca eficiente de prefixos."""
     
@@ -100,6 +115,9 @@ class LetterDetectorCNN:
         self.model = None
         self.label_map = {}
         self.img_size = 64
+        
+        model_path = resource_path(model_path)
+        label_map_path = resource_path(label_map_path)
         
         try:
             # Carregar o modelo
@@ -187,7 +205,7 @@ class WordsStreamSolver:
     """
 
     def __init__(self, dicionario_path: str | Path = "palavras_pt.txt"):
-        self.dicionario_path = Path(dicionario_path)
+        self.dicionario_path = Path(resource_path(dicionario_path))
         self.palavras: Set[str] = set()
         self.trie = TrieNode()  # Estrutura Trie para busca rápida
         self._carregar_dicionario()
@@ -292,8 +310,9 @@ class WordsStreamSolver:
             self._inserir_na_trie(palavra)
 
     def normalizar_entrada(self, entrada: str) -> List[str]:
+        # agora aceita '?' como token de letra oculta
         entrada = entrada.upper().strip()
-        letras = re.findall(r'[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ]', entrada)
+        letras = re.findall(r'[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ\?]', entrada)
         return letras
 
     def _inserir_na_trie(self, palavra: str):
@@ -388,6 +407,71 @@ class WordsStreamSolver:
                 )
                 # Restaurar (backtrack)
                 letras_restantes[letra_disponivel] += 1
+
+    # ================= NOVA FUNÇÃO =================
+    def encontrar_anagramas_com_coringa(self, letras: List[str], min_tamanho: int = 4):
+        """
+        Quando existe '?' em letras, testa todas as letras A-Z substituindo o coringa,
+        gera mapa de palavras possíveis por letra e calcula probabilidades relativas.
+
+        Retorna:
+            confirmadas: List[str] -> palavras encontradas sem usar '?'
+            mapa_letra_palavras: Dict[str, List[str]] -> para cada letra testada, lista de palavras (excluindo as confirmadas)
+            probs: Dict[str, float] -> probabilidade relativa (len(lista)/total)
+        """
+        if '?' not in letras:
+            # sem coringa, comportamento normal
+            return self.encontrar_anagramas(letras, min_tamanho), {}, {}
+
+        # separar letras fixas (sem o '?')
+        letras_fixas = [c for c in letras if c != '?']
+
+        # palavras que já existem sem precisar do coringa
+        confirmadas = self.encontrar_anagramas(letras_fixas, min_tamanho)
+
+        # mapa letra -> lista de palavras geradas com essa substituição (excluindo as confirmadas)
+        mapa_letra_palavras: Dict[str, List[str]] = {}
+        for code in range(ord('A'), ord('Z') + 1):
+            letra_teste = chr(code)
+            conjunto = letras_fixas + [letra_teste]
+            palavras = self.encontrar_anagramas(conjunto, min_tamanho)
+            # manter apenas as que não estavam nas confirmadas
+            novas = [p for p in palavras if p not in confirmadas]
+            mapa_letra_palavras[letra_teste] = novas
+
+        # calcular probabilidades (proporcional ao número de palavras novas por letra)
+        total = sum(len(v) for v in mapa_letra_palavras.values())
+        if total == 0:
+            probs = {k: 0.0 for k in mapa_letra_palavras.keys()}
+        else:
+            probs = {k: len(v) / total for k, v in mapa_letra_palavras.items()}
+
+        return confirmadas, mapa_letra_palavras, probs
+    
+    
+    def detectar_letra_falsa(self, letras: List[str], min_tamanho: int = 4):
+        """Testa cada letra como falsa removendo-a e calculando as palavras possíveis."""
+        resultados = {}
+        letras_unicas = list(letras)
+
+        for letra in letras_unicas:
+            letras_sem = [l for l in letras_unicas if l != letra]
+            if '?' in letras_sem:
+                confirmadas, mapa_coringa, _ = self.encontrar_anagramas_com_coringa(letras_sem, min_tamanho)
+                palavras = set(confirmadas)
+                for v in mapa_coringa.values():
+                    palavras.update(v)
+                resultados[letra] = list(palavras)
+            else:
+                resultados[letra] = self.encontrar_anagramas(letras_sem, min_tamanho)
+
+        # Calcular probabilidade inversa: quanto MAIS palavras → mais falsa
+        counts = {letra: len(lst) for letra, lst in resultados.items()}
+        total = sum(counts.values()) or 1  # evitar divisão por zero
+        prob = {letra: counts[letra] / total for letra in resultados.keys()}
+
+        return resultados, prob
+
 
 
 class ImageCropDialog(tk.Toplevel):
@@ -506,8 +590,8 @@ class WordsStreamGUI:
         self._criar_interface()
 
         # Bindings
-        self.root.bind('<Control-v>', lambda e: self.colar_imagem())
-        self.root.bind('<Control-V>', lambda e: self.colar_imagem())
+        self.root.bind('<Control-v>', self.colar_imagem)
+        self.root.bind('<Control-V>', self.colar_imagem)
 
     def _criar_interface(self):
         main_frame = ttk.Frame(self.root, padding=10)
@@ -539,6 +623,10 @@ class WordsStreamGUI:
         self.entry_letras = ttk.Entry(text_frame, font=('Arial', 12))
         self.entry_letras.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
         self.entry_letras.bind('<Return>', lambda e: self.resolver_async())
+
+        self.var_letra_falsa = tk.BooleanVar()
+        ttk.Checkbutton(text_frame, text="Há letra falsa", variable=self.var_letra_falsa).pack(side=tk.LEFT, padx=10)
+
 
         ttk.Label(text_frame, text="Mín:").pack(side=tk.LEFT, padx=5)
         self.spin_min = ttk.Spinbox(text_frame, from_=2, to=12, width=5)
@@ -589,32 +677,53 @@ class WordsStreamGUI:
             self.status_bar.config(text=msg)
 
     # ---------- entrada de imagem ----------
-    def colar_imagem(self):
+    def colar_imagem(self, event=None):
+        # Se o foco estiver no campo de texto, a ação de colar padrão do widget já ocorreu.
+        # Precisamos evitar a dupla execução.
+        if self.root.focus_get() == self.entry_letras:
+            try:
+                # Apenas verificamos se há texto. Se houver, a colagem padrão já aconteceu.
+                self.root.clipboard_get()
+                # Se o código chegou aqui, há texto no clipboard. A colagem padrão já foi feita.
+                # Então, simplesmente paramos a execução para evitar a dupla colagem ou o processamento de imagem.
+                return "break"
+            except tk.TclError:
+                # Não há texto no clipboard. A colagem padrão falhou.
+                # Devemos prosseguir para tentar colar como imagem.
+                pass
+
+        # --- Lógica para colar imagem (executa se o foco não for o entry, ou se o clipboard não tiver texto) ---
+
         if not self.cnn_detector.is_ready():
             messagebox.showerror("Erro", "CNN não disponível!\nVerifique se o modelo 'letter_detector_final.h5' e 'label_map.json' estão presentes.")
-            return
+            return "break"
 
         if not PILLOW_DISPONIVEL:
             messagebox.showerror("Erro", "Pillow não disponível!\nInstale: pip install pillow")
-            return
+            return "break"
 
         try:
             imagem = ImageGrab.grabclipboard()
             if imagem is None:
                 messagebox.showinfo("Aviso", "Nenhuma imagem na área de transferência! Copie uma imagem e tente novamente.")
-                return
+                return "break"
+            
             if not isinstance(imagem, Image.Image):
-                # às vezes o clipboard devolve bytes; tentar abrir
                 try:
                     if isinstance(imagem, (bytes, bytearray)):
                         imagem = Image.open(io.BytesIO(imagem))
+                    else:
+                        messagebox.showinfo("Aviso", "O conteúdo da área de transferência não é uma imagem.")
+                        return "break"
                 except Exception:
                     messagebox.showerror("Erro", "O conteúdo da área de transferência não é uma imagem válida.")
-                    return
+                    return "break"
 
             self._processar_imagem_async(imagem)
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao colar imagem:\n{e}")
+        
+        return "break"
 
     def abrir_arquivo(self):
         if not self.cnn_detector.is_ready():
@@ -695,7 +804,7 @@ class WordsStreamGUI:
         2. Segmentar usando segmentar.py
         3. Extrair tiles
         4. Predizer cada tile com CNN
-        5. Retornar lista de letras detectadas
+        5. Retornar lista de letras detectadas (incluindo '?' quando a CNN não tem confiança)
         """
         if not self.cnn_detector.is_ready():
             return None
@@ -739,7 +848,9 @@ class WordsStreamGUI:
                         letras_detectadas.append(letra)
                         logger.info(f"Tile {tile_name}: {letra} ({confianca:.2%})")
                     else:
-                        logger.debug(f"Tile {tile_name}: Predição abaixo do limiar ou erro")
+                        # Quando a CNN não retorna (confianca baixa), tratamos como coringa '?'
+                        letras_detectadas.append('?')
+                        logger.info(f"Tile {tile_name}: marcado como '?' (letra oculta detectada pela CNN ou confiança baixa)")
                 except Exception as e:
                     logger.error(f"Erro ao processar tile {tile_name}: {e}")
             
@@ -782,12 +893,32 @@ class WordsStreamGUI:
 
     def _resolver_thread(self, letras: List[str], min_tamanho: int):
         try:
+                        # Se tem letra falsa
+            if self.var_letra_falsa.get():
+                resultados_falsa, probs_falsa = self.solver.detectar_letra_falsa(letras, min_tamanho)
+                self.root.after(0, lambda:
+                    self.exibir_resultados_falsa(letras, resultados_falsa, probs_falsa)
+                )
+                return
+
+            # Se houver coringa '?'
+            if '?' in letras:
+                confirmadas, mapa_letra_palavras, probs = self.solver.encontrar_anagramas_com_coringa(letras, min_tamanho)
+                por_tamanho_conf = defaultdict(list)
+                for p in confirmadas:
+                    por_tamanho_conf[len(p)].append(p)
+                self.root.after(0, lambda:
+                    self.exibir_resultados_com_coringa(letras, confirmadas, mapa_letra_palavras, probs, por_tamanho_conf)
+                )
+                return
+
+            # Normal
             palavras = self.solver.encontrar_anagramas(letras, min_tamanho)
             por_tamanho = defaultdict(list)
             for p in palavras:
                 por_tamanho[len(p)].append(p)
             self.root.after(0, lambda: self.exibir_resultados(letras, palavras, por_tamanho))
-            self.root.after(0, lambda: self.status_bar.config(text=f"✓ {len(palavras)} palavras encontradas!"))
+
         except Exception as e:
             logger.exception("Erro ao resolver anagramas")
             self.root.after(0, lambda: messagebox.showerror("Erro", f"Erro ao buscar palavras:\n{e}"))
@@ -821,11 +952,87 @@ class WordsStreamGUI:
                 self.text_resultados.insert(tk.END, texto_linha)
             self.text_resultados.insert(tk.END, "\n")
 
-        """ palavra_mais_longa = palavras[0]
-        self.text_resultados.insert(tk.END, "\n" + "="*80 + "\n")
-        self.text_resultados.insert(tk.END, f"🏆 PALAVRA MAIS LONGA: {palavra_mais_longa.lower()} ({len(palavra_mais_longa)} letras)\n", 'destaque')
-        self.text_resultados.insert(tk.END, "="*80 + "\n") """
         self.text_resultados.config(state='disabled')
+
+    def exibir_resultados_com_coringa(self, letras, confirmadas, mapa_letra_palavras, probs, por_tamanho_conf):
+        """
+        Exibe:
+         - palavras confirmadas (sem '?')
+         - palavras possíveis agrupadas por letra testada, com probabilidade relativa
+        """
+        self.text_resultados.config(state='normal')
+        self.text_resultados.delete(1.0, tk.END)
+
+        # Header
+        total_possiveis = sum(len(v) for v in mapa_letra_palavras.values())
+        self.text_resultados.insert(tk.END, "="*80 + "\n", 'titulo')
+        self.text_resultados.insert(tk.END, f"  TOTAL: {len(confirmadas)} PALAVRAS CONFIRMADAS, {total_possiveis} HIPÓTESES (testando A-Z)\n", 'titulo')
+        self.text_resultados.insert(tk.END, "="*80 + "\n\n", 'titulo')
+
+        # Confirmadas
+        self.text_resultados.insert(tk.END, "✅ PALAVRAS CONFIRMADAS (não dependem do '?'):\n", 'subtitulo')
+        if not confirmadas:
+            self.text_resultados.insert(tk.END, " (nenhuma)\n\n")
+        else:
+            for tamanho in sorted(por_tamanho_conf.keys(), reverse=True):
+                palavras_tamanho = por_tamanho_conf[tamanho]
+                self.text_resultados.insert(tk.END, f"📝 {tamanho} LETRAS ({len(palavras_tamanho)} palavras)\n")
+                self.text_resultados.insert(tk.END, "-" * 80 + "\n")
+                colunas = 5
+                for i in range(0, len(palavras_tamanho), colunas):
+                    linha = palavras_tamanho[i:i+colunas]
+                    texto_linha = "   " + "  ".join(f"{p.lower():<15}" for p in linha) + "\n"
+                    self.text_resultados.insert(tk.END, texto_linha)
+                self.text_resultados.insert(tk.END, "\n")
+
+        # Hipóteses por letra (ordenar por probabilidade decrescente)
+        self.text_resultados.insert(tk.END, "\n🔮 PALAVRAS POSSÍVEIS (dependem da letra oculta '?'):\n", 'subtitulo')
+        # Ordenar letras por probabilidade decrescente
+        letras_ordenadas = sorted(probs.items(), key=lambda x: (-x[1], x[0]))
+        any_shown = False
+        for letra, prob in letras_ordenadas:
+            lista_palavras = mapa_letra_palavras.get(letra, [])
+            if not lista_palavras:
+                continue
+            any_shown = True
+            pct = prob * 100
+            self.text_resultados.insert(tk.END, f"\n🔸 Letra {letra} — {pct:.1f}% ({len(lista_palavras)} palavras)\n", 'destaque')
+            self.text_resultados.insert(tk.END, "-" * 60 + "\n")
+            # Mostrar até N primeiras palavras por letra (evitar excesso)
+            max_show = 80
+            mostrar = lista_palavras[:max_show]
+            colunas = 5
+            for i in range(0, len(mostrar), colunas):
+                linha = mostrar[i:i+colunas]
+                texto_linha = "   " + "  ".join(f"{p.lower():<15}" for p in linha) + "\n"
+                self.text_resultados.insert(tk.END, texto_linha)
+            if len(lista_palavras) > max_show:
+                self.text_resultados.insert(tk.END, f"   ... e mais {len(lista_palavras)-max_show} palavras\n")
+        if not any_shown:
+            self.text_resultados.insert(tk.END, " (nenhuma hipótese gerou palavras)\n")
+
+        self.text_resultados.config(state='disabled')
+
+    def exibir_resultados_falsa(self, letras, resultados_falsa, probs):
+        self.text_resultados.config(state='normal')
+        self.text_resultados.delete(1.0, tk.END)
+
+        self.text_resultados.insert(tk.END, "⚠️ ANÁLISE DE LETRA FALSA\n", 'titulo')
+
+        # Ordenar letras pela probabilidade (descendente)
+        ordenado = sorted(probs.items(), key=lambda x: -x[1])
+
+        for letra, prob in ordenado:
+            lista = resultados_falsa[letra]
+            pct = prob * 100
+            self.text_resultados.insert(tk.END, f"\n🔸 Letra '{letra}' — {pct:.1f}% chance de ser falsa\n", 'destaque')
+            self.text_resultados.insert(tk.END, f"Palavras possíveis removendo '{letra}': {len(lista)}\n")
+            if len(lista) > 0:
+                preview = ", ".join(lista[:20])
+                self.text_resultados.insert(tk.END, f"Ex: {preview}\n")
+
+        self.text_resultados.config(state='disabled')
+
 
     def copiar_resultados(self):
         try:
