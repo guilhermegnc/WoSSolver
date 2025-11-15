@@ -1,28 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Words on Stream - Gerador de Anagramas (versão final com CNN)
-Melhorias aplicadas:
-- Uso de pathlib, logging e melhores tratamentos de exceções
-- Pré-processamento do dicionário para agilizar busca (counters por palavra, index por tamanho)
-- Detecção de letras com CNN (redes neurais convolucionais)
-- Segmentação de tiles usando visão computacional (segmentar.py)
-- Processamento de imagens em thread para não travar a UI
-- Botões para salvar resultados, copiar para área de transferência e limpar
-- Mensagens de status mais claras e proteção contra múltiplos cliques
+Words on Stream - Anagram Generator (final version with CNN)
 
-Adições nesta versão:
-- Suporte explícito para o símbolo '?' (letra oculta do jogo)
-- Teste de todas as letras A–Z quando '?' estiver presente para gerar
-  probabilidades e listar palavras possíveis por letra
+Improvements applied:
+- Use of pathlib, logging, and better exception handling
+- Dictionary pre-processing for faster search (word counters, size index)
+- Letter detection with CNN (convolutional neural networks)
+- Tile segmentation using computer vision (segmentar.py)
+- Image processing in a separate thread to avoid UI freezing
+- Buttons to save results, copy to clipboard, and clear
+- Clearer status messages and protection against multiple clicks
 
-Requerimentos:
+Additions in this version:
+- Explicit support for the '?' symbol (hidden game letter)
+- Testing all A-Z letters when '?' is present to generate
+  probabilities and list possible words per letter
+
+Requirements:
 - Python 3.8+
 - pip install pillow numpy tensorflow opencv-python
 
-Modelos pré-treinados necessários:
-- letter_detector_final.h5 (modelo CNN)
-- label_map.json (mapa de classes)
+Required pre-trained models:
+- letter_detector_final.h5 (CNN model)
+- label_map.json (class map)
 
 """
 from __future__ import annotations
@@ -44,54 +45,43 @@ from pathlib import Path
 from threading import Thread
 import time
 
-# Imports para processamento de imagem
+# Imports for image processing
 try:
     from PIL import Image, ImageTk, ImageGrab
-    PILLOW_DISPONIVEL = True
+    PILLOW_AVAILABLE = True
 except Exception:
-    PILLOW_DISPONIVEL = False
+    PILLOW_AVAILABLE = False
 
-# Imports para CNN
+# Imports for CNN
 try:
     from tensorflow import keras
-    CNN_DISPONIVEL = True
+    CNN_AVAILABLE = True
 except Exception:
-    CNN_DISPONIVEL = False
+    CNN_AVAILABLE = False
 
-# Imports para segmentação
+# Imports for segmentation
 try:
     from segmentar import segment_letters, get_tile_color_images
-    SEGMENTACAO_DISPONIVEL = True
+    SEGMENTATION_AVAILABLE = True
 except Exception:
-    SEGMENTACAO_DISPONIVEL = False
+    SEGMENTATION_AVAILABLE = False
 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 
-def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for Nuitka """
-    if getattr(sys, 'frozen', False):
-        # Running as a bundled executable (Nuitka)
-        base_path = os.path.dirname(sys.executable)
-    else:
-        # Running as a normal script
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
-
-
 class TrieNode:
-    """Nó da estrutura Trie para busca eficiente de prefixos."""
+    """Node for the Trie structure for efficient prefix searching."""
     
     def __init__(self):
-        self.filhos: Dict[str, 'TrieNode'] = {}
-        self.eh_palavra = False
-        self.palavra_completa: Optional[str] = None
+        self.children: Dict[str, 'TrieNode'] = {}
+        self.is_word = False
+        self.full_word: Optional[str] = None
 
-# Mapas de equivalência entre vogais/consoantes base e variantes acentuadas.
-# Usados para permitir que letras sem acento possam formar palavras que contenham
-# vogais acentuadas (e o contrário).
+# Equivalence maps between base vowels/consonants and accented variants.
+# Used to allow unaccented letters to form words containing
+# accented vowels (and vice versa).
 ACCENT_EQUIV: Dict[str, List[str]] = {
     'A': ['A', 'Á', 'À', 'Â', 'Ã', 'Ä'],
     'E': ['E', 'É', 'È', 'Ê', 'Ë'],
@@ -101,7 +91,7 @@ ACCENT_EQUIV: Dict[str, List[str]] = {
     'C': ['C', 'Ç'],
 }
 
-# Mapa inverso: variante -> base
+# Inverse map: variant -> base
 VARIANT_TO_BASE: Dict[str, str] = {}
 for base, variants in ACCENT_EQUIV.items():
     for v in variants:
@@ -109,109 +99,106 @@ for base, variants in ACCENT_EQUIV.items():
 
 
 class LetterDetectorCNN:
-    """Wrapper para carregar e usar o modelo CNN de detecção de letras."""
+    """Wrapper to load and use the CNN letter detection model."""
     
     def __init__(self, model_path='letter_detector_final.h5', label_map_path='label_map.json'):
         self.model = None
         self.label_map = {}
         self.img_size = 64
         
-        model_path = resource_path(model_path)
-        label_map_path = resource_path(label_map_path)
-        
         try:
-            # Carregar o modelo
+            # Load the model
             if Path(model_path).exists():
                 self.model = keras.models.load_model(model_path)
-                logger.info(f"Modelo CNN carregado: {model_path}")
+                logger.info(f"CNN model loaded: {model_path}")
             else:
-                logger.warning(f"Modelo não encontrado em: {model_path}")
+                logger.warning(f"Model not found at: {model_path}")
                 
-            # Carregar mapa de labels
+            # Load label map
             if Path(label_map_path).exists():
                 with open(label_map_path, 'r') as f:
                     self.label_map = json.load(f)
-                logger.info(f"Label map carregado: {len(self.label_map)} classes")
+                logger.info(f"Label map loaded: {len(self.label_map)} classes")
             else:
-                logger.warning(f"Label map não encontrado em: {label_map_path}")
+                logger.warning(f"Label map not found at: {label_map_path}")
         except Exception as e:
-            logger.error(f"Erro ao carregar modelo CNN: {e}")
+            logger.error(f"Error loading CNN model: {e}")
     
     def is_ready(self) -> bool:
-        """Verifica se o modelo foi carregado corretamente."""
+        """Checks if the model has been loaded correctly."""
         return self.model is not None and len(self.label_map) > 0
     
     def predict_letter(self, tile_image: np.ndarray, confidence_threshold: float = 0.3) -> Optional[Tuple[str, float]]:
-        """Prediz a letra de um tile individual.
+        """Predicts the letter of an individual tile.
         
         Args:
-            tile_image: Imagem do tile (BGR ou escala de cinza)
-            confidence_threshold: Limiar mínimo de confiança
+            tile_image: Tile image (BGR or grayscale)
+            confidence_threshold: Minimum confidence threshold
             
         Returns:
-            Tupla (letra, confiança) ou None se abaixo do limiar
+            Tuple (letter, confidence) or None if below threshold
         """
         if not self.is_ready():
             return None
         
         try:
-            # Converter para escala de cinza se necessário
+            # Convert to grayscale if necessary
             if len(tile_image.shape) == 3:
                 gray = cv2.cvtColor(tile_image, cv2.COLOR_BGR2GRAY)
             else:
                 gray = tile_image
             
-            # Redimensionar para tamanho esperado pelo modelo
+            # Resize to model's expected size
             resized = cv2.resize(gray, (self.img_size, self.img_size))
             
-            # Normalizar (0-1)
+            # Normalize (0-1)
             normalized = resized.astype('float32') / 255.0
             
-            # Adicionar dimensão de batch e canal
+            # Add batch and channel dimensions
             input_data = np.expand_dims(normalized, axis=(0, -1))  # (1, 64, 64, 1)
             
-            # Predição
+            # Prediction
             prediction = self.model.predict(input_data, verbose=0)[0]
             confidence = float(np.max(prediction))
             class_idx = int(np.argmax(prediction))
             
-            # Verificar limiar de confiança
+            # Check confidence threshold
             if confidence < confidence_threshold:
-                logger.debug(f"Predição abaixo do limiar: {confidence:.2%}")
+                logger.debug(f"Prediction below threshold: {confidence:.2%}")
                 return None
             
-            # Obter letra correspondente
+            # Get corresponding letter
             reverse_map = {v: k for k, v in self.label_map.items()}
             if class_idx in reverse_map:
                 letter = reverse_map[class_idx]
-                logger.debug(f"Letra predita: {letter} ({confidence:.2%})")
+                logger.debug(f"Predicted letter: {letter} ({confidence:.2%})")
                 return (letter, confidence)
             else:
-                logger.warning(f"Classe {class_idx} não encontrada no mapa de labels")
+                logger.warning(f"Class {class_idx} not found in label map")
                 return None
         except Exception as e:
-            logger.error(f"Erro na predição CNN: {e}")
+            logger.error(f"Error in CNN prediction: {e}")
             return None
 
 
 class WordsStreamSolver:
-    """Solucionador de anagramas para Words on Stream (melhorado com Trie + Poda Recursiva)
+    """Anagram solver for Words on Stream (improved with Trie + Recursive Pruning)
 
-    Estratégia:
-      - Carrega dicionário em maiúsculas
-      - Constrói uma Trie para busca eficiente de prefixos
-      - Usa busca recursiva com poda: elimina ramos impossíveis baseado nas letras disponíveis
-      - Muito mais rápido que força bruta, especialmente com dicionários grandes
+    Strategy:
+      - Loads dictionary in uppercase
+      - Builds a Trie for efficient prefix searching
+      - Uses recursive search with pruning: eliminates impossible branches based on available letters
+      - Much faster than brute force, especially with large dictionaries
     """
 
-    def __init__(self, dicionario_path: str | Path = "palavras_pt.txt"):
-        self.dicionario_path = Path(resource_path(dicionario_path))
-        self.palavras: Set[str] = set()
-        self.trie = TrieNode()  # Estrutura Trie para busca rápida
-        self._carregar_dicionario()
+    def __init__(self, dictionary_path: str | Path = "palavras_pt.txt"):
+        self.dictionary_path = Path(dictionary_path)
+        self.words: Set[str] = set()
+        self.trie = TrieNode()  # Trie structure for fast searching
+        self._load_dictionary()
 
-    def _baixar_dicionario(self) -> Set[str]:
-        """Tenta baixar dicionários públicos em PT-BR. Retorna conjunto de palavras."""
+    def _download_dictionary(self) -> Set[str]:
+        """Tries to download public PT-BR dictionaries. Returns a set of words."""
         urls = [
             "https://www.ime.usp.br/~pf/dicios/br-utf8.txt",
             #"https://raw.githubusercontent.com/pythonprobr/palavras/master/palavras.txt",
@@ -219,27 +206,27 @@ class WordsStreamSolver:
 
         for url in urls:
             try:
-                logger.info(f"Tentando baixar dicionário: {url}")
+                logger.info(f"Attempting to download dictionary: {url}")
                 response = urllib.request.urlopen(url, timeout=10)
-                conteudo = response.read().decode('utf-8', errors='ignore')
-                palavras = set(linha.strip().upper() for linha in conteudo.splitlines() if linha.strip())
+                content = response.read().decode('utf-8', errors='ignore')
+                words = set(line.strip().upper() for line in content.splitlines() if line.strip())
 
-                # salvar localmente
+                # save locally
                 try:
-                    self.dicionario_path.write_text('\n'.join(sorted(palavras)), encoding='utf-8')
+                    self.dictionary_path.write_text('\n'.join(sorted(words)), encoding='utf-8')
                 except Exception as e:
-                    logger.warning(f"Não foi possível salvar dicionário localmente: {e}")
+                    logger.warning(f"Could not save dictionary locally: {e}")
 
-                return palavras
+                return words
             except Exception as e:
-                logger.warning(f"Falha ao baixar {url}: {e}")
+                logger.warning(f"Failed to download {url}: {e}")
                 continue
 
         return set()
 
-    def _dicionario_basico(self) -> Set[str]:
-        """Dicionário mínimo embutido, em maiúsculas."""
-        palavras_basicas = """
+    def _basic_dictionary(self) -> Set[str]:
+        """Minimum embedded dictionary, in uppercase."""
+        basic_words = """
         CASA GATO CACHORRO BOLA CAMA MESA CADEIRA LIVRO AGUA CAFE LEITE
         PRATO GARFO FACA COLHER PORTA JANELA CHAVE CARRO MOTO BIKE TREM
         AVIAO NAVIO BARCO PRAIA MAR SOL LUA ESTRELA CEU NUVEM CHUVA VENTO
@@ -274,255 +261,255 @@ class WordsStreamSolver:
         SAIR CHEGAR PARTIR VOLTAR FICAR MUDAR MOVER PARAR SEGUIR BUSCAR
         BANCO BANHO CABANA CHANA BANHA CANGA CHAGA GANA BANCA GANCHO
         """.split()
-        return set(palavras_basicas)
+        return set(basic_words)
 
-    def _carregar_dicionario(self):
-        """Carrega e constrói a Trie a partir do dicionário local (ou baixa um).
+    def _load_dictionary(self):
+        """Loads and builds the Trie from the local dictionary (or downloads one).
 
-        Ao final, temos:
-          - self.palavras (set)
-          - self.trie (estrutura Trie para busca eficiente)
+        Finally, we have:
+          - self.words (set)
+          - self.trie (Trie structure for efficient searching)
         """
-        palavras = set()
+        words = set()
 
-        if self.dicionario_path.exists():
+        if self.dictionary_path.exists():
             try:
-                texto = self.dicionario_path.read_text(encoding='utf-8')
-                palavras = set(l.strip().upper() for l in texto.splitlines() if l.strip())
-                logger.info(f"Carregado dicionário local: {self.dicionario_path} ({len(palavras)} palavras)")
+                text = self.dictionary_path.read_text(encoding='utf-8')
+                words = set(l.strip().upper() for l in text.splitlines() if l.strip())
+                logger.info(f"Loaded local dictionary: {self.dictionary_path} ({len(words)} words)")
             except Exception as e:
-                logger.warning(f"Erro ao ler dicionário local: {e}")
+                logger.warning(f"Error reading local dictionary: {e}")
 
-        if not palavras:
-            palavras = self._baixar_dicionario()
+        if not words:
+            words = self._download_dictionary()
 
-        if not palavras:
-            logger.info("Usando dicionário básico embutido")
-            palavras = self._dicionario_basico()
+        if not words:
+            logger.info("Using embedded basic dictionary")
+            words = self._basic_dictionary()
 
-        # normaliza
-        palavras = set(p for p in palavras if re.match(r'^[A-ZÀ-Ÿ]+$', p))
-        self.palavras = palavras
+        # normalize
+        words = set(p for p in words if re.match(r'^[A-ZÀ-Ÿ]+$', p))
+        self.words = words
         
-        # Constrói a Trie
+        # Builds the Trie
         self.trie = TrieNode()
-        for palavra in palavras:
-            self._inserir_na_trie(palavra)
+        for word in words:
+            self._insert_into_trie(word)
 
-    def normalizar_entrada(self, entrada: str) -> List[str]:
-        # agora aceita '?' como token de letra oculta
-        entrada = entrada.upper().strip()
-        letras = re.findall(r'[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ\?]', entrada)
-        return letras
+    def normalize_input(self, input_str: str) -> List[str]:
+        # now accepts '?' as a hidden letter token
+        input_str = input_str.upper().strip()
+        letters = re.findall(r'[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ\?]', input_str)
+        return letters
 
-    def _inserir_na_trie(self, palavra: str):
-        """Insere uma palavra na Trie."""
+    def _insert_into_trie(self, word: str):
+        """Inserts a word into the Trie."""
         node = self.trie
-        for letra in palavra:
-            if letra not in node.filhos:
-                node.filhos[letra] = TrieNode()
-            node = node.filhos[letra]
-        node.eh_palavra = True
-        node.palavra_completa = palavra
+        for letter in word:
+            if letter not in node.children:
+                node.children[letter] = TrieNode()
+            node = node.children[letter]
+        node.is_word = True
+        node.full_word = word
 
-    def _equivalent_letters(self, letra: str) -> List[str]:
-        """Retorna a lista de letras equivalentes para 'letra'.
+    def _equivalent_letters(self, letter: str) -> List[str]:
+        """Returns the list of equivalent letters for 'letter'.
 
         Ex: 'A' -> ['A','Á','À',...], 'Á' -> ['A','Á','À',...], 'B' -> ['B']
         """
-        letra = letra.upper()
-        # Se for uma variante mapeada, obter a base e então todas as variantes
-        base = VARIANT_TO_BASE.get(letra, letra)
-        return ACCENT_EQUIV.get(base, [letra])
+        letter = letter.upper()
+        # If it's a mapped variant, get the base and then all variants
+        base = VARIANT_TO_BASE.get(letter, letter)
+        return ACCENT_EQUIV.get(base, [letter])
 
-    def pode_formar_palavra(self, contador_palavra: Counter, letras_disponiveis: Counter) -> bool:
-        """Verifica se contador_palavra pode ser formado por letras_disponiveis (mantido para compatibilidade)."""
-        for letra, qtd in contador_palavra.items():
-            if letras_disponiveis[letra] < qtd:
+    def can_form_word(self, word_counter: Counter, available_letters: Counter) -> bool:
+        """Checks if word_counter can be formed by available_letters (kept for compatibility)."""
+        for letter, qty in word_counter.items():
+            if available_letters[letter] < qty:
                 return False
         return True
 
-    def encontrar_anagramas(self, letras: List[str], min_tamanho: int = 4) -> List[str]:
+    def find_anagrams(self, letters: List[str], min_length: int = 4) -> List[str]:
         """
-        Encontra anagramas usando Trie + Poda Recursiva.
+        Finds anagrams using Trie + Recursive Pruning.
         
-        A busca recursiva explora a Trie só pelos caminhos que podem ser formados
-        com as letras disponíveis, podando ramos impossíveis cedo.
+        The recursive search explores the Trie only through paths that can be formed
+        with the available letters, pruning impossible branches early.
         """
-        letras_disponiveis = Counter(letras)
-        resultados: List[str] = []
+        available_letters = Counter(letters)
+        results: List[str] = []
         
-        # Busca recursiva com poda
-        self._buscar_recursivo(
+        # Recursive search with pruning
+        self._recursive_search(
             node=self.trie,
-            letras_restantes=letras_disponiveis,
-            min_tamanho=min_tamanho,
-            resultados=resultados
+            remaining_letters=available_letters,
+            min_length=min_length,
+            results=results
         )
         
-        # Ordena por comprimento decrescente e lexicograficamente
-        resultados.sort(key=lambda p: (-len(p), p))
-        return resultados
+        # Sort by decreasing length and lexicographically
+        results.sort(key=lambda p: (-len(p), p))
+        return results
 
-    def _buscar_recursivo(
+    def _recursive_search(
         self,
         node: TrieNode,
-        letras_restantes: Counter,
-        min_tamanho: int,
-        resultados: List[str]
+        remaining_letters: Counter,
+        min_length: int,
+        results: List[str]
     ):
         """
-        Busca recursiva com poda na Trie.
+        Recursive search with pruning in the Trie.
         
-        Estratégia:
-        - Se chegamos a uma palavra válida e tamanho >= min_tamanho, adicionamos aos resultados
-        - Para cada letra filha, se temos essa letra disponível, descemos recursivamente
-        - Automaticamente poda ramos onde não temos as letras necessárias
+        Strategy:
+        - If we reach a valid word and length >= min_length, add to results
+        - For each child letter, if we have that letter available, descend recursively
+        - Automatically prunes branches where we don't have the necessary letters
         """
         
-        # Base: se este nó marca final de palavra e tem tamanho mínimo
-        if node.eh_palavra and len(node.palavra_completa) >= min_tamanho:
-            resultados.append(node.palavra_completa)
+        # Base: if this node marks end of word and has minimum length
+        if node.is_word and len(node.full_word) >= min_length:
+            results.append(node.full_word)
         
-        # Recursão: explorar filhos apenas se temos as letras.
-        # Para suportar equivalência entre vogais acentuadas e não-acentuadas,
-        # iteramos pelas letras disponíveis e procuramos filhos equivalentes.
-        for letra_disponivel, qtd in list(letras_restantes.items()):
-            if qtd <= 0:
+        # Recursion: explore children only if we have the letters.
+        # To support equivalence between accented and unaccented vowels,
+        # we iterate through available letters and look for equivalent children.
+        for available_letter, qty in list(remaining_letters.items()):
+            if qty <= 0:
                 continue
-            # obter letras equivalentes que podem existir na Trie
-            candidatos = self._equivalent_letters(letra_disponivel)
-            for cand in candidatos:
-                filho_node = node.filhos.get(cand)
-                if not filho_node:
+            # get equivalent letters that may exist in the Trie
+            candidates = self._equivalent_letters(available_letter)
+            for cand in candidates:
+                child_node = node.children.get(cand)
+                if not child_node:
                     continue
-                # Usar a letra disponível (a contagem refere-se à entrada do usuário)
-                letras_restantes[letra_disponivel] -= 1
-                # Recursar descendo no nó correspondente
-                self._buscar_recursivo(
-                    node=filho_node,
-                    letras_restantes=letras_restantes,
-                    min_tamanho=min_tamanho,
-                    resultados=resultados
+                # Use the available letter (count refers to user input)
+                remaining_letters[available_letter] -= 1
+                # Recurse down the corresponding node
+                self._recursive_search(
+                    node=child_node,
+                    remaining_letters=remaining_letters,
+                    min_length=min_length,
+                    results=results
                 )
-                # Restaurar (backtrack)
-                letras_restantes[letra_disponivel] += 1
+                # Restore (backtrack)
+                remaining_letters[available_letter] += 1
 
     # ================= NOVA FUNÇÃO =================
-    def encontrar_anagramas_com_coringa(self, letras: List[str], min_tamanho: int = 4):
+    def find_anagrams_with_wildcard(self, letters: List[str], min_length: int = 4):
         """
-        Quando existe '?' em letras, testa todas as letras A-Z substituindo o coringa,
-        gera mapa de palavras possíveis por letra e calcula probabilidades relativas.
+        When '?' exists in letters, tests all A-Z letters replacing the wildcard,
+        generates a map of possible words per letter and calculates relative probabilities.
 
-        Retorna:
-            confirmadas: List[str] -> palavras encontradas sem usar '?'
-            mapa_letra_palavras: Dict[str, List[str]] -> para cada letra testada, lista de palavras (excluindo as confirmadas)
-            probs: Dict[str, float] -> probabilidade relativa (len(lista)/total)
+        Returns:
+            confirmed: List[str] -> words found without using '?'
+            letter_word_map: Dict[str, List[str]] -> for each tested letter, list of words (excluding confirmed ones)
+            probs: Dict[str, float] -> relative probability (len(list)/total)
         """
-        if '?' not in letras:
-            # sem coringa, comportamento normal
-            return self.encontrar_anagramas(letras, min_tamanho), {}, {}
+        if '?' not in letters:
+            # no wildcard, normal behavior
+            return self.find_anagrams(letters, min_length), {}, {}
 
-        # separar letras fixas (sem o '?')
-        letras_fixas = [c for c in letras if c != '?']
+        # separate fixed letters (without '?')
+        fixed_letters = [c for c in letters if c != '?']
 
-        # palavras que já existem sem precisar do coringa
-        confirmadas = self.encontrar_anagramas(letras_fixas, min_tamanho)
+        # words that already exist without needing the wildcard
+        confirmed = self.find_anagrams(fixed_letters, min_length)
 
-        # mapa letra -> lista de palavras geradas com essa substituição (excluindo as confirmadas)
-        mapa_letra_palavras: Dict[str, List[str]] = {}
+        # map letter -> list of words generated with this substitution (excluding confirmed ones)
+        letter_word_map: Dict[str, List[str]] = {}
         for code in range(ord('A'), ord('Z') + 1):
-            letra_teste = chr(code)
-            conjunto = letras_fixas + [letra_teste]
-            palavras = self.encontrar_anagramas(conjunto, min_tamanho)
-            # manter apenas as que não estavam nas confirmadas
-            novas = [p for p in palavras if p not in confirmadas]
-            mapa_letra_palavras[letra_teste] = novas
+            test_letter = chr(code)
+            combination = fixed_letters + [test_letter]
+            words = self.find_anagrams(combination, min_length)
+            # keep only those not in confirmed
+            new_words = [p for p in words if p not in confirmed]
+            letter_word_map[test_letter] = new_words
 
-        # calcular probabilidades (proporcional ao número de palavras novas por letra)
-        total = sum(len(v) for v in mapa_letra_palavras.values())
+        # calculate probabilities (proportional to the number of new words per letter)
+        total = sum(len(v) for v in letter_word_map.values())
         if total == 0:
-            probs = {k: 0.0 for k in mapa_letra_palavras.keys()}
+            probs = {k: 0.0 for k in letter_word_map.keys()}
         else:
-            probs = {k: len(v) / total for k, v in mapa_letra_palavras.items()}
+            probs = {k: len(v) / total for k, v in letter_word_map.items()}
 
-        return confirmadas, mapa_letra_palavras, probs
+        return confirmed, letter_word_map, probs
     
     
-    def detectar_letra_falsa(self, letras: List[str], min_tamanho: int = 4):
-        """Testa cada letra como falsa removendo-a e calculando as palavras possíveis."""
-        resultados = {}
-        letras_unicas = list(letras)
+    def detect_false_letter(self, letters: List[str], min_length: int = 4):
+        """Tests each letter as false by removing it and calculating possible words."""
+        results = {}
+        unique_letters = list(letters)
 
-        for letra in letras_unicas:
-            letras_sem = [l for l in letras_unicas if l != letra]
-            if '?' in letras_sem:
-                confirmadas, mapa_coringa, _ = self.encontrar_anagramas_com_coringa(letras_sem, min_tamanho)
-                palavras = set(confirmadas)
-                for v in mapa_coringa.values():
-                    palavras.update(v)
-                resultados[letra] = list(palavras)
+        for letter in unique_letters:
+            letters_without = [l for l in unique_letters if l != letter]
+            if '?' in letters_without:
+                confirmed, wildcard_map, _ = self.find_anagrams_with_wildcard(letters_without, min_length)
+                words = set(confirmed)
+                for v in wildcard_map.values():
+                    words.update(v)
+                results[letter] = list(words)
             else:
-                resultados[letra] = self.encontrar_anagramas(letras_sem, min_tamanho)
+                results[letter] = self.find_anagrams(letters_without, min_length)
 
-        # Calcular probabilidade inversa: quanto MAIS palavras → mais falsa
-        counts = {letra: len(lst) for letra, lst in resultados.items()}
-        total = sum(counts.values()) or 1  # evitar divisão por zero
-        prob = {letra: counts[letra] / total for letra in resultados.keys()}
+        # Calculate inverse probability: the MORE words → the more false
+        counts = {letter: len(lst) for letter, lst in results.items()}
+        total = sum(counts.values()) or 1  # avoid division by zero
+        prob = {letter: counts[letter] / total for letter in results.keys()}
 
-        return resultados, prob
+        return results, prob
 
 
 
 class ImageCropDialog(tk.Toplevel):
-    """Diálogo para selecionar área de recorte na imagem (igual ao original, com pequenas melhorias)"""
+    """Dialog to select crop area in the image (same as original, with minor improvements)"""
 
-    def __init__(self, parent, imagem: 'Image.Image'):
+    def __init__(self, parent, image: 'Image.Image'):
         super().__init__(parent)
-        self.title("Selecionar Área com Letras")
-        self.imagem_original = imagem
-        self.imagem_recortada: Optional['Image.Image'] = None
+        self.title("Select Area with Letters")
+        self.original_image = image
+        self.cropped_image: Optional['Image.Image'] = None
         self.transient(parent)
         self.grab_set()
 
-        # Configurações
+        # Configurations
         self.rect = None
         self.start_x = None
         self.start_y = None
 
-        # Redimensiona imagem para caber na tela
+        # Resize image to fit screen
         max_width, max_height = 900, 700
-        self.scale = min(max_width / imagem.width, max_height / imagem.height, 1.0)
+        self.scale = min(max_width / image.width, max_height / image.height, 1.0)
 
-        new_size = (int(imagem.width * self.scale), int(imagem.height * self.scale))
-        self.imagem_display = imagem.resize(new_size, Image.Resampling.LANCZOS)
-        self.photo = ImageTk.PhotoImage(self.imagem_display)
+        new_size = (int(image.width * self.scale), int(image.height * self.scale))
+        self.display_image = image.resize(new_size, Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(self.display_image)
 
-        # Canvas para desenhar
+        # Canvas for drawing
         self.canvas = tk.Canvas(self, width=new_size[0], height=new_size[1], cursor="cross")
         self.canvas.pack(padx=10, pady=10)
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.photo)
 
-        # Instruções
+        # Instructions
         frame_info = ttk.Frame(self)
         frame_info.pack(fill=tk.X, padx=10, pady=5)
 
-        ttk.Label(frame_info, text="🖱️ Arraste para selecionar a área com as letras", font=('Arial', 10)).pack(side=tk.LEFT, padx=5)
+        ttk.Label(frame_info, text="🖱️ Drag to select the area with letters", font=('Arial', 10)).pack(side=tk.LEFT, padx=5)
 
-        # Botões
+        # Buttons
         frame_btns = ttk.Frame(self)
         frame_btns.pack(fill=tk.X, padx=10, pady=10)
 
-        ttk.Button(frame_btns, text="✓ Confirmar", command=self.confirmar).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(frame_btns, text="✗ Cancelar", command=self.cancelar).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(frame_btns, text="🔄 Usar Imagem Inteira", command=self.usar_toda).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(frame_btns, text="✓ Confirm", command=self.confirm).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(frame_btns, text="✗ Cancel", command=self.cancel).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(frame_btns, text="🔄 Use Entire Image", command=self.use_entire_image).pack(side=tk.RIGHT, padx=5)
 
-        # Eventos do mouse
+        # Mouse events
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
 
-        # Centraliza
+        # Center
         self.update_idletasks()
         x = (self.winfo_screenwidth() // 2) - (self.winfo_width() // 2)
         y = (self.winfo_screenheight() // 2) - (self.winfo_height() // 2)
@@ -542,13 +529,13 @@ class ImageCropDialog(tk.Toplevel):
     def on_release(self, event):
         pass
 
-    def usar_toda(self):
-        self.imagem_recortada = self.imagem_original
+    def use_entire_image(self):
+        self.cropped_image = self.original_image
         self.destroy()
 
-    def confirmar(self):
+    def confirm(self):
         if not self.rect:
-            messagebox.showwarning("Aviso", "Selecione uma área primeiro ou use 'Usar Imagem Inteira'")
+            messagebox.showwarning("Warning", "Select an area first or use 'Use Entire Image'")
             return
 
         coords = self.canvas.coords(self.rect)
@@ -557,29 +544,29 @@ class ImageCropDialog(tk.Toplevel):
         y1, y2 = min(y1, y2), max(y1, y2)
 
         if x2 - x1 < 10 or y2 - y1 < 10:
-            messagebox.showwarning("Aviso", "Área muito pequena! Selecione uma área maior.")
+            messagebox.showwarning("Warning", "Area too small! Select a larger area.")
             return
 
-        self.imagem_recortada = self.imagem_original.crop((x1, y1, x2, y2))
+        self.cropped_image = self.original_image.crop((x1, y1, x2, y2))
         self.destroy()
 
-    def cancelar(self):
-        self.imagem_recortada = None
+    def cancel(self):
+        self.cropped_image = None
         self.destroy()
 
 
 class WordsStreamGUI:
-    """Interface gráfica principal com melhorias de usabilidade."""
+    """Main graphical interface with usability improvements."""
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Words on Stream - Gerador de Anagramas")
+        self.root.title("Words on Stream - Anagram Generator")
         self.root.geometry("980x720")
 
         self.solver = WordsStreamSolver()
         self.cnn_detector = LetterDetectorCNN()
-        self.imagem_atual = None
-        self._processando = False
+        self.current_image = None
+        self._processing = False
 
         style = ttk.Style()
         try:
@@ -587,283 +574,283 @@ class WordsStreamGUI:
         except Exception:
             pass
 
-        self._criar_interface()
+        self._create_interface()
 
         # Bindings
-        self.root.bind('<Control-v>', self.colar_imagem)
-        self.root.bind('<Control-V>', self.colar_imagem)
+        self.root.bind('<Control-v>', self.paste_image)
+        self.root.bind('<Control-V>', self.paste_image)
 
-    def _criar_interface(self):
+    def _create_interface(self):
         main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         title_frame = ttk.Frame(main_frame)
         title_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Label(title_frame, text="🎮 WORDS ON STREAM", font=('Arial', 20, 'bold')).pack()
-        ttk.Label(title_frame, text="Gerador de Anagramas com CNN", font=('Arial', 10)).pack()
+        ttk.Label(title_frame, text="Anagram Generator with CNN", font=('Arial', 10)).pack()
 
-        input_frame = ttk.LabelFrame(main_frame, text="📥 Entrada", padding=10)
+        input_frame = ttk.LabelFrame(main_frame, text="📥 Input", padding=10)
         input_frame.pack(fill=tk.X, pady=(0, 10))
 
         btn_frame = ttk.Frame(input_frame)
         btn_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Button(btn_frame, text="📋 Colar Imagem (Ctrl+V)", command=self.colar_imagem).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btn_frame, text="📂 Abrir Arquivo", command=self.abrir_arquivo).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="📋 Paste Image (Ctrl+V)", command=self.paste_image).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="📂 Open File", command=self.open_file).pack(side=tk.LEFT, padx=5)
 
-        # Status do detector CNN
-        cnn_status = "✓ CNN Pronta" if self.cnn_detector.is_ready() else "⚠️ CNN não disponível"
+        # CNN detector status
+        cnn_status = "✓ CNN Ready" if self.cnn_detector.is_ready() else "⚠️ CNN not available"
         cnn_color = 'green' if self.cnn_detector.is_ready() else 'orange'
         ttk.Label(btn_frame, text=cnn_status, foreground=cnn_color).pack(side=tk.LEFT, padx=10)
 
         text_frame = ttk.Frame(input_frame)
         text_frame.pack(fill=tk.X)
 
-        ttk.Label(text_frame, text="Ou digite as letras:").pack(side=tk.LEFT, padx=5)
-        self.entry_letras = ttk.Entry(text_frame, font=('Arial', 12))
-        self.entry_letras.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-        self.entry_letras.bind('<Return>', lambda e: self.resolver_async())
+        ttk.Label(text_frame, text="Or type the letters:").pack(side=tk.LEFT, padx=5)
+        self.entry_letters = ttk.Entry(text_frame, font=('Arial', 12))
+        self.entry_letters.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        self.entry_letters.bind('<Return>', lambda e: self.solve_async())
 
-        self.var_letra_falsa = tk.BooleanVar()
-        ttk.Checkbutton(text_frame, text="Há letra falsa", variable=self.var_letra_falsa).pack(side=tk.LEFT, padx=10)
+        self.var_false_letter = tk.BooleanVar()
+        ttk.Checkbutton(text_frame, text="Has false letter", variable=self.var_false_letter).pack(side=tk.LEFT, padx=10)
 
 
-        ttk.Label(text_frame, text="Mín:").pack(side=tk.LEFT, padx=5)
+        ttk.Label(text_frame, text="Min:").pack(side=tk.LEFT, padx=5)
         self.spin_min = ttk.Spinbox(text_frame, from_=2, to=12, width=5)
         self.spin_min.set(4)
         self.spin_min.pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(text_frame, text="🔍 Resolver", command=self.resolver_async).pack(side=tk.LEFT, padx=5)
+        ttk.Button(text_frame, text="🔍 Solve", command=self.solve_async).pack(side=tk.LEFT, padx=5)
 
-        self.label_letras = ttk.Label(input_frame, text="", font=('Arial', 11, 'bold'))
-        self.label_letras.pack(pady=5)
+        self.label_letters = ttk.Label(input_frame, text="", font=('Arial', 11, 'bold'))
+        self.label_letters.pack(pady=5)
 
-        result_frame = ttk.LabelFrame(main_frame, text="📊 Resultados", padding=10)
+        result_frame = ttk.LabelFrame(main_frame, text="📊 Results", padding=10)
         result_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.text_resultados = scrolledtext.ScrolledText(result_frame, font=('Courier', 10), wrap=tk.WORD, state='disabled')
-        self.text_resultados.pack(fill=tk.BOTH, expand=True)
+        self.text_results = scrolledtext.ScrolledText(result_frame, font=('Courier', 10), wrap=tk.WORD, state='disabled')
+        self.text_results.pack(fill=tk.BOTH, expand=True)
 
         # tags
-        self.text_resultados.tag_config('titulo', font=('Arial', 12, 'bold'))
-        self.text_resultados.tag_config('subtitulo', font=('Arial', 10, 'bold'))
-        self.text_resultados.tag_config('destaque', foreground='#0066cc', font=('Arial', 11, 'bold'))
-        # clique em palavra copia para área de transferência
-        self.text_resultados.bind('<Button-1>', self._on_result_click)
-        # tag temporária para destacar palavra clicada
-        self.text_resultados.tag_config('clicked', background='#fff2b2')
+        self.text_results.tag_config('title', font=('Arial', 12, 'bold'))
+        self.text_results.tag_config('subtitle', font=('Arial', 10, 'bold'))
+        self.text_results.tag_config('highlight', foreground='#0066cc', font=('Arial', 11, 'bold'))
+        # click on word copies to clipboard
+        self.text_results.bind('<Button-1>', self._on_result_click)
+        # temporary tag to highlight clicked word
+        self.text_results.tag_config('clicked', background='#fff2b2')
 
-        # ações rápidas
+        # quick actions
         actions = ttk.Frame(main_frame)
         actions.pack(fill=tk.X, pady=(8, 0))
-        ttk.Button(actions, text="📋 Copiar Resultados", command=self.copiar_resultados).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions, text="💾 Salvar Resultados", command=self.salvar_resultados).pack(side=tk.LEFT, padx=5)
-        ttk.Button(actions, text="🧹 Limpar", command=self.limpar).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions, text="📋 Copy Results", command=self.copy_results).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions, text="💾 Save Results", command=self.save_results).pack(side=tk.LEFT, padx=5)
+        ttk.Button(actions, text="🧹 Clear", command=self.clear).pack(side=tk.LEFT, padx=5)
 
-        self.status_bar = ttk.Label(main_frame, text="Pronto! Cole uma imagem (Ctrl+V) ou digite as letras.", relief=tk.SUNKEN, anchor=tk.W)
+        self.status_bar = ttk.Label(main_frame, text="Ready! Paste an image (Ctrl+V) or type the letters.", relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(fill=tk.X, pady=(10, 0))
 
-    # ---------- utilitários de UI ----------
-    def _set_processando(self, valor: bool, msg: Optional[str] = None):
-        self._processando = valor
-        state = 'disabled' if valor else 'normal'
-        # Desabilitar controles principais
+    # ---------- UI utilities ----------
+    def _set_processing(self, value: bool, msg: Optional[str] = None):
+        self._processing = value
+        state = 'disabled' if value else 'normal'
+        # Disable main controls
         try:
-            for widget in (self.entry_letras,):
+            for widget in (self.entry_letters,):
                 widget.config(state=state)
         except Exception:
             pass
         if msg:
             self.status_bar.config(text=msg)
 
-    # ---------- entrada de imagem ----------
-    def colar_imagem(self, event=None):
-        # Se o foco estiver no campo de texto, a ação de colar padrão do widget já ocorreu.
-        # Precisamos evitar a dupla execução.
-        if self.root.focus_get() == self.entry_letras:
+    # ---------- image input ----------
+    def paste_image(self, event=None):
+        # If focus is on the text field, the widget's default paste action has already occurred.
+        # We need to avoid double execution.
+        if self.root.focus_get() == self.entry_letters:
             try:
-                # Apenas verificamos se há texto. Se houver, a colagem padrão já aconteceu.
+                # We only check if there is text. If there is, the default paste has already happened.
                 self.root.clipboard_get()
-                # Se o código chegou aqui, há texto no clipboard. A colagem padrão já foi feita.
-                # Então, simplesmente paramos a execução para evitar a dupla colagem ou o processamento de imagem.
+                # If the code reached here, there is text in the clipboard. Default paste has already been done.
+                # So, we simply stop execution to avoid double pasting or image processing.
                 return "break"
             except tk.TclError:
-                # Não há texto no clipboard. A colagem padrão falhou.
-                # Devemos prosseguir para tentar colar como imagem.
+                # No text in clipboard. Default paste failed.
+                # We should proceed to try pasting as an image.
                 pass
 
-        # --- Lógica para colar imagem (executa se o foco não for o entry, ou se o clipboard não tiver texto) ---
+        # --- Logic to paste image (executes if focus is not on the entry, or if clipboard has no text) ---
 
         if not self.cnn_detector.is_ready():
-            messagebox.showerror("Erro", "CNN não disponível!\nVerifique se o modelo 'letter_detector_final.h5' e 'label_map.json' estão presentes.")
+            messagebox.showerror("Error", "CNN not available!\nCheck if 'letter_detector_final.h5' model and 'label_map.json' are present.")
             return "break"
 
-        if not PILLOW_DISPONIVEL:
-            messagebox.showerror("Erro", "Pillow não disponível!\nInstale: pip install pillow")
+        if not PILLOW_AVAILABLE:
+            messagebox.showerror("Error", "Pillow not available!\nInstall: pip install pillow")
             return "break"
 
         try:
-            imagem = ImageGrab.grabclipboard()
-            if imagem is None:
-                messagebox.showinfo("Aviso", "Nenhuma imagem na área de transferência! Copie uma imagem e tente novamente.")
+            image = ImageGrab.grabclipboard()
+            if image is None:
+                messagebox.showinfo("Warning", "No image in clipboard! Copy an image and try again.")
                 return "break"
             
-            if not isinstance(imagem, Image.Image):
+            if not isinstance(image, Image.Image):
                 try:
-                    if isinstance(imagem, (bytes, bytearray)):
-                        imagem = Image.open(io.BytesIO(imagem))
+                    if isinstance(image, (bytes, bytearray)):
+                        image = Image.open(io.BytesIO(image))
                     else:
-                        messagebox.showinfo("Aviso", "O conteúdo da área de transferência não é uma imagem.")
+                        messagebox.showinfo("Warning", "Clipboard content is not an image.")
                         return "break"
                 except Exception:
-                    messagebox.showerror("Erro", "O conteúdo da área de transferência não é uma imagem válida.")
+                    messagebox.showerror("Error", "Clipboard content is not a valid image.")
                     return "break"
 
-            self._processar_imagem_async(imagem)
+            self._process_image_async(image)
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao colar imagem:\n{e}")
+            messagebox.showerror("Error", f"Error pasting image:\n{e}")
         
         return "break"
 
-    def abrir_arquivo(self):
+    def open_file(self):
         if not self.cnn_detector.is_ready():
-            messagebox.showerror("Erro", "CNN não disponível!\nVerifique se o modelo 'letter_detector_final.h5' e 'label_map.json' estão presentes.")
+            messagebox.showerror("Error", "CNN not available!\nCheck if 'letter_detector_final.h5' model and 'label_map.json' are present.")
             return
 
-        if not PILLOW_DISPONIVEL:
-            messagebox.showerror("Erro", "Pillow não disponível!\nInstale: pip install pillow")
+        if not PILLOW_AVAILABLE:
+            messagebox.showerror("Error", "Pillow not available!\nInstall: pip install pillow")
             return
 
-        arquivo = filedialog.askopenfilename(title="Selecionar Imagem", filetypes=[("Imagens", "*.png *.jpg *.jpeg *.bmp *.gif"), ("Todos", "*.*")])
-        if not arquivo:
+        file_path = filedialog.askopenfilename(title="Select Image", filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All Files", "*.*")])
+        if not file_path:
             return
         try:
-            imagem = Image.open(arquivo)
-            self._processar_imagem_async(imagem)
+            image = Image.open(file_path)
+            self._process_image_async(image)
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao abrir arquivo:\n{e}")
+            messagebox.showerror("Error", f"Error opening file:\n{e}")
 
-    # ---------- threading para não travar UI ----------
-    def _processar_imagem_async(self, imagem):
-        if self._processando:
+    # ---------- threading to avoid UI freezing ----------
+    def _process_image_async(self, image):
+        if self._processing:
             return
-        self._set_processando(True, "Processando imagem...")
-        # Criar dialog na thread principal
-        dialog = ImageCropDialog(self.root, imagem)
+        self._set_processing(True, "Processing image...")
+        # Create dialog in main thread
+        dialog = ImageCropDialog(self.root, image)
         self.root.wait_window(dialog)
-        if dialog.imagem_recortada is None:
-            self.status_bar.config(text="Operação cancelada.")
-            self._set_processando(False)
+        if dialog.cropped_image is None:
+            self.status_bar.config(text="Operation cancelled.")
+            self._set_processing(False)
             return
-        # Processar imagem em thread separada
-        Thread(target=self._processar_imagem_thread, args=(dialog.imagem_recortada,), daemon=True).start()
+        # Process image in separate thread
+        Thread(target=self._process_image_thread, args=(dialog.cropped_image,), daemon=True).start()
 
-    def _processar_imagem_thread(self, imagem_recortada):
+    def _process_image_thread(self, cropped_image):
         try:
-            letras = self._processar_imagem_cnn(imagem_recortada)
-            logger.info(f"DEBUG: Letras detectadas: {letras}")
-            if letras:
-                # inserir letras e resolver (na thread principal)
-                letras_str = ''.join(letras)
-                len_letras = len(letras)
-                logger.info(f"DEBUG: letras_str = '{letras_str}', len = {len_letras}")
+            letters = self._process_image_cnn(cropped_image)
+            logger.info(f"DEBUG: Detected letters: {letters}")
+            if letters:
+                # insert letters and solve (in main thread)
+                letters_str = ''.join(letters)
+                len_letters = len(letters)
+                logger.info(f"DEBUG: letters_str = '{letters_str}', len = {len_letters}")
                 
-                def inserir_e_resolver():
+                def insert_and_solve():
                     try:
-                        logger.info(f"DEBUG: Dentro de inserir_e_resolver, tentando inserir '{letras_str}'")
-                        # Garantir que o campo está habilitado
-                        self.entry_letras.config(state='normal')
-                        self.entry_letras.delete(0, tk.END)
-                        logger.info(f"DEBUG: Delete executado")
-                        self.entry_letras.insert(0, letras_str)
-                        logger.info(f"DEBUG: Insert executado com sucesso")
-                        self.status_bar.config(text=f"✓ {len_letras} letras detectadas pela CNN!")
-                        logger.info(f"DEBUG: Status bar atualizado")
-                        self.resolver_async()
-                        logger.info(f"DEBUG: resolver_async chamado")
+                        logger.info(f"DEBUG: Inside insert_and_solve, attempting to insert '{letters_str}'")
+                        # Ensure the field is enabled
+                        self.entry_letters.config(state='normal')
+                        self.entry_letters.delete(0, tk.END)
+                        logger.info(f"DEBUG: Delete executed")
+                        self.entry_letters.insert(0, letters_str)
+                        logger.info(f"DEBUG: Insert executed successfully")
+                        self.status_bar.config(text=f"✓ {len_letters} letters detected by CNN!")
+                        logger.info(f"DEBUG: Status bar updated")
+                        self.solve_async()
+                        logger.info(f"DEBUG: solve_async called")
                     except Exception as e:
-                        logger.error(f"DEBUG: Erro em inserir_e_resolver: {e}", exc_info=True)
+                        logger.error(f"DEBUG: Error in insert_and_solve: {e}", exc_info=True)
                 
-                logger.info(f"DEBUG: Agendando inserir_e_resolver com root.after(0, ...)")
-                self.root.after(0, inserir_e_resolver)
+                logger.info(f"DEBUG: Scheduling insert_and_solve with root.after(0, ...)")
+                self.root.after(0, insert_and_solve)
             else:
-                logger.warning("DEBUG: Nenhuma letra detectada")
-                self.root.after(0, lambda: messagebox.showwarning("Aviso", "Nenhuma letra detectada! Verifique a imagem e tente novamente."))
-                self.root.after(0, lambda: self.status_bar.config(text="Nenhuma letra detectada na imagem."))
+                logger.warning("DEBUG: No letters detected")
+                self.root.after(0, lambda: messagebox.showwarning("Warning", "No letters detected! Check the image and try again."))
+                self.root.after(0, lambda: self.status_bar.config(text="No letters detected in the image."))
         except Exception as e:
-            logger.exception("Erro no processamento de imagem")
-            self.root.after(0, lambda: messagebox.showerror("Erro", f"Erro ao processar imagem:\n{e}"))
+            logger.exception("Error in image processing")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Error processing image:\n{e}"))
         finally:
-            self.root.after(0, lambda: self._set_processando(False))
+            self.root.after(0, lambda: self._set_processing(False))
 
-    def _processar_imagem_cnn(self, imagem_pil) -> Optional[List[str]]:
-        """Processa imagem com segmentação e CNN para detectar letras.
+    def _process_image_cnn(self, pil_image) -> Optional[List[str]]:
+        """Processes image with segmentation and CNN to detect letters.
         
-        Fluxo:
-        1. Converter imagem PIL para arquivo temporário
-        2. Segmentar usando segmentar.py
-        3. Extrair tiles
-        4. Predizer cada tile com CNN
-        5. Retornar lista de letras detectadas (incluindo '?' quando a CNN não tem confiança)
+        Flow:
+        1. Convert PIL image to temporary file
+        2. Segment using segmentar.py
+        3. Extract tiles
+        4. Predict each tile with CNN
+        5. Return list of detected letters (including '?' when CNN has low confidence)
         """
         if not self.cnn_detector.is_ready():
             return None
         
-        if not SEGMENTACAO_DISPONIVEL:
-            logger.error("Módulo de segmentação não disponível")
+        if not SEGMENTATION_AVAILABLE:
+            logger.error("Segmentation module not available")
             return None
         
         try:
-            # Salvar imagem PIL em arquivo temporário
+            # Save PIL image to temporary file
             temp_path = "temp_image_processing.png"
-            imagem_pil.save(temp_path)
+            pil_image.save(temp_path)
             
-            logger.info(f"Segmentando imagem: {temp_path}")
+            logger.info(f"Segmenting image: {temp_path}")
             
-            # Segmentar imagem
+            # Segment image
             segmented_letters, original_img = segment_letters(temp_path, debug=False)
             
             if not segmented_letters:
-                logger.warning("Nenhuma letra segmentada")
+                logger.warning("No letters segmented")
                 return None
             
-            logger.info(f"Encontradas {len(segmented_letters)} regiões de letras")
+            logger.info(f"Found {len(segmented_letters)} letter regions")
             
-            # Extrair tiles em memória
+            # Extract tiles in memory
             tile_images = get_tile_color_images(segmented_letters)
             
             if not tile_images:
-                logger.warning("Nenhuma imagem de tile extraída")
+                logger.warning("No tile images extracted")
                 return None
             
-            logger.info(f"Extraídos {len(tile_images)} tiles")
+            logger.info(f"Extracted {len(tile_images)} tiles")
             
-            # Predizer cada tile
-            letras_detectadas = []
+            # Predict each tile
+            detected_letters = []
             for tile_name, tile_image in tile_images.items():
                 try:
-                    resultado = self.cnn_detector.predict_letter(tile_image, confidence_threshold=0.3)
-                    if resultado:
-                        letra, confianca = resultado
-                        letras_detectadas.append(letra)
-                        logger.info(f"Tile {tile_name}: {letra} ({confianca:.2%})")
+                    result = self.cnn_detector.predict_letter(tile_image, confidence_threshold=0.3)
+                    if result:
+                        letter, confidence = result
+                        detected_letters.append(letter)
+                        logger.info(f"Tile {tile_name}: {letter} ({confidence:.2%})")
                     else:
-                        # Quando a CNN não retorna (confianca baixa), tratamos como coringa '?'
-                        letras_detectadas.append('?')
-                        logger.info(f"Tile {tile_name}: marcado como '?' (letra oculta detectada pela CNN ou confiança baixa)")
+                        # When CNN does not return (low confidence), treat as wildcard '?'
+                        detected_letters.append('?')
+                        logger.info(f"Tile {tile_name}: marked as '?' (hidden letter detected by CNN or low confidence)")
                 except Exception as e:
-                    logger.error(f"Erro ao processar tile {tile_name}: {e}")
+                    logger.error(f"Error processing tile {tile_name}: {e}")
             
-            # Limpar arquivo temporário
+            # Clean up temporary file
             try:
                 os.remove(temp_path)
             except Exception:
                 pass
             
-            return letras_detectadas if letras_detectadas else None
+            return detected_letters if detected_letters else None
         except Exception as e:
-            logger.exception("Erro no processamento CNN")
-            # Tentar limpar arquivo temporário em caso de erro
+            logger.exception("Error in CNN processing")
+            # Try to clean up temporary file in case of error
             try:
                 if os.path.exists("temp_image_processing.png"):
                     os.remove("temp_image_processing.png")
@@ -871,251 +858,251 @@ class WordsStreamGUI:
                 pass
             return None
 
-    # ---------- resolver (threaded) ----------
-    def resolver_async(self):
-        if self._processando:
+    # ---------- solve (threaded) ----------
+    def solve_async(self):
+        if self._processing:
             return
-        entrada = self.entry_letras.get().strip()
-        if not entrada:
-            messagebox.showwarning("Aviso", "Digite as letras ou cole uma imagem!")
+        input_str = self.entry_letters.get().strip()
+        if not input_str:
+            messagebox.showwarning("Warning", "Enter letters or paste an image!")
             return
         try:
-            min_tamanho = int(self.spin_min.get())
+            min_length = int(self.spin_min.get())
         except Exception:
-            min_tamanho = 4
-        letras = self.solver.normalizar_entrada(entrada)
-        if not letras:
-            messagebox.showerror("Erro", "Nenhuma letra válida encontrada!")
+            min_length = 4
+        letters = self.solver.normalize_input(input_str)
+        if not letters:
+            messagebox.showerror("Error", "No valid letters found!")
             return
 
-        self._set_processando(True, "Buscando palavras...")
-        Thread(target=self._resolver_thread, args=(letras, min_tamanho), daemon=True).start()
+        self._set_processing(True, "Searching for words...")
+        Thread(target=self._solve_thread, args=(letters, min_length), daemon=True).start()
 
-    def _resolver_thread(self, letras: List[str], min_tamanho: int):
+    def _solve_thread(self, letters: List[str], min_length: int):
         try:
-                        # Se tem letra falsa
-            if self.var_letra_falsa.get():
-                resultados_falsa, probs_falsa = self.solver.detectar_letra_falsa(letras, min_tamanho)
+            # If there is a false letter
+            if self.var_false_letter.get():
+                false_results, false_probs = self.solver.detect_false_letter(letters, min_length)
                 self.root.after(0, lambda:
-                    self.exibir_resultados_falsa(letras, resultados_falsa, probs_falsa)
+                    self.display_false_letter_results(letters, false_results, false_probs)
                 )
                 return
 
-            # Se houver coringa '?'
-            if '?' in letras:
-                confirmadas, mapa_letra_palavras, probs = self.solver.encontrar_anagramas_com_coringa(letras, min_tamanho)
-                por_tamanho_conf = defaultdict(list)
-                for p in confirmadas:
-                    por_tamanho_conf[len(p)].append(p)
+            # If there is a wildcard '?'
+            if '?' in letters:
+                confirmed, letter_word_map, probs = self.solver.find_anagrams_with_wildcard(letters, min_length)
+                by_length_conf = defaultdict(list)
+                for p in confirmed:
+                    by_length_conf[len(p)].append(p)
                 self.root.after(0, lambda:
-                    self.exibir_resultados_com_coringa(letras, confirmadas, mapa_letra_palavras, probs, por_tamanho_conf)
+                    self.display_wildcard_results(letters, confirmed, letter_word_map, probs, by_length_conf)
                 )
                 return
 
             # Normal
-            palavras = self.solver.encontrar_anagramas(letras, min_tamanho)
-            por_tamanho = defaultdict(list)
-            for p in palavras:
-                por_tamanho[len(p)].append(p)
-            self.root.after(0, lambda: self.exibir_resultados(letras, palavras, por_tamanho))
+            words = self.solver.find_anagrams(letters, min_length)
+            by_length = defaultdict(list)
+            for p in words:
+                by_length[len(p)].append(p)
+            self.root.after(0, lambda: self.display_results(letters, words, by_length))
 
         except Exception as e:
-            logger.exception("Erro ao resolver anagramas")
-            self.root.after(0, lambda: messagebox.showerror("Erro", f"Erro ao buscar palavras:\n{e}"))
+            logger.exception("Error solving anagrams")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Error searching for words:\n{e}"))
         finally:
-            self.root.after(0, lambda: self._set_processando(False))
+            self.root.after(0, lambda: self._set_processing(False))
 
-    # ---------- exibição e ações ----------
-    def exibir_resultados(self, letras, palavras, por_tamanho):
-        self.text_resultados.config(state='normal')
-        self.text_resultados.delete(1.0, tk.END)
+    # ---------- display and actions ----------
+    def display_results(self, letters, words, by_length):
+        self.text_results.config(state='normal')
+        self.text_results.delete(1.0, tk.END)
 
-        if not palavras:
-            self.text_resultados.insert(tk.END, "❌ Nenhuma palavra encontrada com essas letras.\n\n")
-            self.text_resultados.insert(tk.END, f"Letras disponíveis: {' '.join(letras)}\n")
-            self.text_resultados.insert(tk.END, f"Tamanho mínimo: {self.spin_min.get()}\n")
-            self.text_resultados.config(state='disabled')
+        if not words:
+            self.text_results.insert(tk.END, "❌ No words found with these letters.\n\n")
+            self.text_results.insert(tk.END, f"Available letters: {' '.join(letters)}\n")
+            self.text_results.insert(tk.END, f"Minimum length: {self.spin_min.get()}\n")
+            self.text_results.config(state='disabled')
             return
 
-        self.text_resultados.insert(tk.END, "="*80 + "\n", 'titulo')
-        self.text_resultados.insert(tk.END, f"  TOTAL: {len(palavras)} PALAVRAS ENCONTRADAS\n", 'titulo')
-        self.text_resultados.insert(tk.END, "="*80 + "\n\n", 'titulo')
+        self.text_results.insert(tk.END, "="*80 + "\n", 'title')
+        self.text_results.insert(tk.END, f"  TOTAL: {len(words)} WORDS FOUND\n", 'title')
+        self.text_results.insert(tk.END, "="*80 + "\n\n", 'title')
 
-        for tamanho in sorted(por_tamanho.keys(), reverse=True):
-            palavras_tamanho = por_tamanho[tamanho]
-            self.text_resultados.insert(tk.END, f"📝 {tamanho} LETRAS ({len(palavras_tamanho)} palavras)\n", 'subtitulo')
-            self.text_resultados.insert(tk.END, "-" * 80 + "\n")
-            colunas = 5
-            for i in range(0, len(palavras_tamanho), colunas):
-                linha = palavras_tamanho[i:i+colunas]
-                texto_linha = "   " + "  ".join(f"{p.lower():<15}" for p in linha) + "\n"
-                self.text_resultados.insert(tk.END, texto_linha)
-            self.text_resultados.insert(tk.END, "\n")
+        for length in sorted(by_length.keys(), reverse=True):
+            words_by_length = by_length[length]
+            self.text_results.insert(tk.END, f"📝 {length} LETTERS ({len(words_by_length)} words)\n", 'subtitle')
+            self.text_results.insert(tk.END, "-" * 80 + "\n")
+            columns = 5
+            for i in range(0, len(words_by_length), columns):
+                line = words_by_length[i:i+columns]
+                line_text = "   " + "  ".join(f"{p.lower():<15}" for p in line) + "\n"
+                self.text_results.insert(tk.END, line_text)
+            self.text_results.insert(tk.END, "\n")
 
-        self.text_resultados.config(state='disabled')
+        self.text_results.config(state='disabled')
 
-    def exibir_resultados_com_coringa(self, letras, confirmadas, mapa_letra_palavras, probs, por_tamanho_conf):
+    def display_wildcard_results(self, letters, confirmed, letter_word_map, probs, by_length_conf):
         """
-        Exibe:
-         - palavras confirmadas (sem '?')
-         - palavras possíveis agrupadas por letra testada, com probabilidade relativa
+        Displays:
+         - confirmed words (without '?')
+         - possible words grouped by tested letter, with relative probability
         """
-        self.text_resultados.config(state='normal')
-        self.text_resultados.delete(1.0, tk.END)
+        self.text_results.config(state='normal')
+        self.text_results.delete(1.0, tk.END)
 
         # Header
-        total_possiveis = sum(len(v) for v in mapa_letra_palavras.values())
-        self.text_resultados.insert(tk.END, "="*80 + "\n", 'titulo')
-        self.text_resultados.insert(tk.END, f"  TOTAL: {len(confirmadas)} PALAVRAS CONFIRMADAS, {total_possiveis} HIPÓTESES (testando A-Z)\n", 'titulo')
-        self.text_resultados.insert(tk.END, "="*80 + "\n\n", 'titulo')
+        total_possible = sum(len(v) for v in letter_word_map.values())
+        self.text_results.insert(tk.END, "="*80 + "\n", 'title')
+        self.text_results.insert(tk.END, f"  TOTAL: {len(confirmed)} CONFIRMED WORDS, {total_possible} HYPOTHESES (testing A-Z)\n", 'title')
+        self.text_results.insert(tk.END, "="*80 + "\n\n", 'title')
 
-        # Confirmadas
-        self.text_resultados.insert(tk.END, "✅ PALAVRAS CONFIRMADAS (não dependem do '?'):\n", 'subtitulo')
-        if not confirmadas:
-            self.text_resultados.insert(tk.END, " (nenhuma)\n\n")
+        # Confirmed
+        self.text_results.insert(tk.END, "✅ CONFIRMED WORDS (do not depend on '?'):\n", 'subtitle')
+        if not confirmed:
+            self.text_results.insert(tk.END, " (none)\n\n")
         else:
-            for tamanho in sorted(por_tamanho_conf.keys(), reverse=True):
-                palavras_tamanho = por_tamanho_conf[tamanho]
-                self.text_resultados.insert(tk.END, f"📝 {tamanho} LETRAS ({len(palavras_tamanho)} palavras)\n")
-                self.text_resultados.insert(tk.END, "-" * 80 + "\n")
-                colunas = 5
-                for i in range(0, len(palavras_tamanho), colunas):
-                    linha = palavras_tamanho[i:i+colunas]
-                    texto_linha = "   " + "  ".join(f"{p.lower():<15}" for p in linha) + "\n"
-                    self.text_resultados.insert(tk.END, texto_linha)
-                self.text_resultados.insert(tk.END, "\n")
+            for length in sorted(by_length_conf.keys(), reverse=True):
+                words_by_length = by_length_conf[length]
+                self.text_results.insert(tk.END, f"📝 {length} LETTERS ({len(words_by_length)} words)\n")
+                self.text_results.insert(tk.END, "-" * 80 + "\n")
+                columns = 5
+                for i in range(0, len(words_by_length), columns):
+                    line = words_by_length[i:i+columns]
+                    line_text = "   " + "  ".join(f"{p.lower():<15}" for p in line) + "\n"
+                    self.text_results.insert(tk.END, line_text)
+                self.text_results.insert(tk.END, "\n")
 
-        # Hipóteses por letra (ordenar por probabilidade decrescente)
-        self.text_resultados.insert(tk.END, "\n🔮 PALAVRAS POSSÍVEIS (dependem da letra oculta '?'):\n", 'subtitulo')
-        # Ordenar letras por probabilidade decrescente
-        letras_ordenadas = sorted(probs.items(), key=lambda x: (-x[1], x[0]))
+        # Hypotheses by letter (sort by decreasing probability)
+        self.text_results.insert(tk.END, "\n🔮 POSSIBLE WORDS (depend on the hidden letter '?'):\n", 'subtitle')
+        # Sort letters by decreasing probability
+        ordered_letters = sorted(probs.items(), key=lambda x: (-x[1], x[0]))
         any_shown = False
-        for letra, prob in letras_ordenadas:
-            lista_palavras = mapa_letra_palavras.get(letra, [])
-            if not lista_palavras:
+        for letter, prob in ordered_letters:
+            word_list = letter_word_map.get(letter, [])
+            if not word_list:
                 continue
             any_shown = True
             pct = prob * 100
-            self.text_resultados.insert(tk.END, f"\n🔸 Letra {letra} — {pct:.1f}% ({len(lista_palavras)} palavras)\n", 'destaque')
-            self.text_resultados.insert(tk.END, "-" * 60 + "\n")
-            # Mostrar até N primeiras palavras por letra (evitar excesso)
+            self.text_results.insert(tk.END, f"\n🔸 Letter {letter} — {pct:.1f}% ({len(word_list)} words)\n", 'highlight')
+            self.text_results.insert(tk.END, "-" * 60 + "\n")
+            # Show up to N first words per letter (avoid excess)
             max_show = 80
-            mostrar = lista_palavras[:max_show]
-            colunas = 5
-            for i in range(0, len(mostrar), colunas):
-                linha = mostrar[i:i+colunas]
-                texto_linha = "   " + "  ".join(f"{p.lower():<15}" for p in linha) + "\n"
-                self.text_resultados.insert(tk.END, texto_linha)
-            if len(lista_palavras) > max_show:
-                self.text_resultados.insert(tk.END, f"   ... e mais {len(lista_palavras)-max_show} palavras\n")
+            to_show = word_list[:max_show]
+            columns = 5
+            for i in range(0, len(to_show), columns):
+                line = to_show[i:i+columns]
+                line_text = "   " + "  ".join(f"{p.lower():<15}" for p in line) + "\n"
+                self.text_results.insert(tk.END, line_text)
+            if len(word_list) > max_show:
+                self.text_results.insert(tk.END, f"   ... and {len(word_list)-max_show} more words\n")
         if not any_shown:
-            self.text_resultados.insert(tk.END, " (nenhuma hipótese gerou palavras)\n")
+            self.text_results.insert(tk.END, " (no hypothesis generated words)\n")
 
-        self.text_resultados.config(state='disabled')
+        self.text_results.config(state='disabled')
 
-    def exibir_resultados_falsa(self, letras, resultados_falsa, probs):
-        self.text_resultados.config(state='normal')
-        self.text_resultados.delete(1.0, tk.END)
+    def display_false_letter_results(self, letters, false_results, probs):
+        self.text_results.config(state='normal')
+        self.text_results.delete(1.0, tk.END)
 
-        self.text_resultados.insert(tk.END, "⚠️ ANÁLISE DE LETRA FALSA\n", 'titulo')
+        self.text_results.insert(tk.END, "⚠️ FALSE LETTER ANALYSIS\n", 'title')
 
-        # Ordenar letras pela probabilidade (descendente)
-        ordenado = sorted(probs.items(), key=lambda x: -x[1])
+        # Sort letters by probability (descending)
+        ordered = sorted(probs.items(), key=lambda x: -x[1])
 
-        for letra, prob in ordenado:
-            lista = resultados_falsa[letra]
+        for letter, prob in ordered:
+            word_list = false_results[letter]
             pct = prob * 100
-            self.text_resultados.insert(tk.END, f"\n🔸 Letra '{letra}' — {pct:.1f}% chance de ser falsa\n", 'destaque')
-            self.text_resultados.insert(tk.END, f"Palavras possíveis removendo '{letra}': {len(lista)}\n")
-            if len(lista) > 0:
-                preview = ", ".join(lista[:20])
-                self.text_resultados.insert(tk.END, f"Ex: {preview}\n")
+            self.text_results.insert(tk.END, f"\n🔸 Letter '{letter}' — {pct:.1f}% chance of being false\n", 'highlight')
+            self.text_results.insert(tk.END, f"Possible words removing '{letter}': {len(word_list)}\n")
+            if len(word_list) > 0:
+                preview = ", ".join(word_list[:20])
+                self.text_results.insert(tk.END, f"Ex: {preview}\n")
 
-        self.text_resultados.config(state='disabled')
+        self.text_results.config(state='disabled')
 
 
-    def copiar_resultados(self):
+    def copy_results(self):
         try:
-            texto = self.text_resultados.get(1.0, tk.END).strip()
-            if not texto:
+            text = self.text_results.get(1.0, tk.END).strip()
+            if not text:
                 return
             self.root.clipboard_clear()
-            self.root.clipboard_append(texto)
-            self.status_bar.config(text="Copiado para a área de transferência.")
+            self.root.clipboard_append(text)
+            self.status_bar.config(text="Copied to clipboard.")
         except Exception as e:
-            messagebox.showerror("Erro", f"Não foi possível copiar:\n{e}")
+            messagebox.showerror("Error", f"Could not copy:\n{e}")
 
     def _on_result_click(self, event):
-        """Handler quando o usuário clica em uma palavra nos resultados.
+        """Handler when the user clicks on a word in the results.
 
-        Copia a palavra clicada para a área de transferência e destaca-a brevemente.
+        Copies the clicked word to the clipboard and briefly highlights it.
         """
         try:
-            # obter índice textual sob o cursor
-            idx = self.text_resultados.index(f"@{event.x},{event.y}")
-            # obter palavra (wordstart/wordend considera pontuação)
-            palavra = self.text_resultados.get(f"{idx} wordstart", f"{idx} wordend").strip()
-            if not palavra:
+            # get text index under cursor
+            idx = self.text_results.index(f"@{event.x},{event.y}")
+            # get word (wordstart/wordend considers punctuation)
+            word = self.text_results.get(f"{idx} wordstart", f"{idx} wordend").strip()
+            if not word:
                 return
-            # extrair apenas letras (incluindo acentos) — protege contra cabeçalhos e símbolos
-            m = re.findall(r"[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ]+", palavra.upper())
+            # extract only letters (including accents) — protects against headers and symbols
+            m = re.findall(r"[A-ZÁÀÂÃÉÊÍÓÔÕÚÇÜ]+", word.upper())
             if not m:
                 return
-            palavra_clean = m[0].lower()
+            clean_word = m[0].lower()
 
-            # copiar para área de transferência
+            # copy to clipboard
             self.root.clipboard_clear()
-            self.root.clipboard_append(palavra_clean)
-            self.status_bar.config(text=f"Copiado: {palavra_clean}")
+            self.root.clipboard_append(clean_word)
+            self.status_bar.config(text=f"Copied: {clean_word}")
 
-            # destacar palavra brevemente
-            # precisamos temporariamente permitir edição para adicionar tag
-            prev_state = self.text_resultados.cget('state')
+            # highlight word briefly
+            # we temporarily need to allow editing to add tag
+            prev_state = self.text_results.cget('state')
             try:
-                self.text_resultados.config(state='normal')
-                start = self.text_resultados.index(f"{idx} wordstart")
-                end = self.text_resultados.index(f"{idx} wordend")
-                self.text_resultados.tag_add('clicked', start, end)
+                self.text_results.config(state='normal')
+                start = self.text_results.index(f"{idx} wordstart")
+                end = self.text_results.index(f"{idx} wordend")
+                self.text_results.tag_add('clicked', start, end)
             finally:
-                # restaurar estado desabilitado (será re-habilitado após remoção da tag)
-                self.text_resultados.config(state=prev_state)
+                # restore disabled state (will be re-enabled after tag removal)
+                self.text_results.config(state=prev_state)
 
-            # remover destaque após 800ms
+            # remove highlight after 800ms
             def _clear_tag():
                 try:
-                    self.text_resultados.config(state='normal')
-                    self.text_resultados.tag_remove('clicked', start, end)
-                    self.text_resultados.config(state=prev_state)
+                    self.text_results.config(state='normal')
+                    self.text_results.tag_remove('clicked', start, end)
+                    self.text_results.config(state=prev_state)
                 except Exception:
                     pass
 
-            self.text_resultados.after(800, _clear_tag)
+            self.text_results.after(800, _clear_tag)
 
         except Exception:
-            # não falhar na UI por um clique inválido
+            # do not fail UI for an invalid click
             return
 
-    def salvar_resultados(self):
+    def save_results(self):
         try:
-            texto = self.text_resultados.get(1.0, tk.END).strip()
-            if not texto:
-                messagebox.showinfo("Info", "Nenhum resultado para salvar.")
+            text = self.text_results.get(1.0, tk.END).strip()
+            if not text:
+                messagebox.showinfo("Info", "No results to save.")
                 return
-            arquivo = filedialog.asksaveasfilename(defaultextension='.txt', filetypes=[('Text', '*.txt')])
-            if not arquivo:
+            file_path = filedialog.asksaveasfilename(defaultextension='.txt', filetypes=[('Text', '*.txt')])
+            if not file_path:
                 return
-            Path(arquivo).write_text(texto, encoding='utf-8')
-            self.status_bar.config(text=f"Salvo em: {arquivo}")
+            Path(file_path).write_text(text, encoding='utf-8')
+            self.status_bar.config(text=f"Saved to: {file_path}")
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao salvar:\n{e}")
+            messagebox.showerror("Error", f"Error saving:\n{e}")
 
-    def limpar(self):
-        self.entry_letras.delete(0, tk.END)
-        self.text_resultados.config(state='normal')
-        self.text_resultados.delete(1.0, tk.END)
-        self.text_resultados.config(state='disabled')
-        self.label_letras.config(text='')
-        self.status_bar.config(text="Limpo. Cole uma imagem (Ctrl+V) ou digite as letras.")
+    def clear(self):
+        self.entry_letters.delete(0, tk.END)
+        self.text_results.config(state='normal')
+        self.text_results.delete(1.0, tk.END)
+        self.text_results.config(state='disabled')
+        self.label_letters.config(text='')
+        self.status_bar.config(text="Cleared. Paste an image (Ctrl+V) or type the letters.")
 
 
 def main():
