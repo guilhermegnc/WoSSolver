@@ -19,10 +19,10 @@ Additions in this version:
 
 Requirements:
 - Python 3.8+
-- pip install pillow numpy tensorflow opencv-python
+- pip install pillow numpy onnxruntime opencv-python
 
 Required pre-trained models:
-- letter_detector_final.h5 (CNN model)
+- letter_detector_final.onnx (ONNX model)
 - label_map.json (class map)
 
 """
@@ -54,7 +54,7 @@ except Exception:
 
 # Imports for CNN
 try:
-    from tensorflow import keras
+    import onnxruntime as ort
     CNN_AVAILABLE = True
 except Exception:
     CNN_AVAILABLE = False
@@ -99,18 +99,22 @@ for base, variants in ACCENT_EQUIV.items():
 
 
 class LetterDetectorCNN:
-    """Wrapper to load and use the CNN letter detection model."""
+    """Wrapper to load and use the ONNX letter detection model."""
     
-    def __init__(self, model_path='letter_detector_final.h5', label_map_path='label_map.json'):
-        self.model = None
+    def __init__(self, model_path='letter_detector_final.onnx', label_map_path='label_map.json'):
+        self.session = None
         self.label_map = {}
         self.img_size = 64
+        self.input_name: Optional[str] = None
         
         try:
-            # Load the model
+            # Load the ONNX model
             if Path(model_path).exists():
-                self.model = keras.models.load_model(model_path)
-                logger.info(f"CNN model loaded: {model_path}")
+                self.session = ort.InferenceSession(model_path)
+                # Get the input name from the model
+                self.input_name = self.session.get_inputs()[0].name
+                logger.info(f"ONNX model loaded: {model_path}")
+                logger.info(f"Model input name: {self.input_name}")
             else:
                 logger.warning(f"Model not found at: {model_path}")
                 
@@ -122,11 +126,11 @@ class LetterDetectorCNN:
             else:
                 logger.warning(f"Label map not found at: {label_map_path}")
         except Exception as e:
-            logger.error(f"Error loading CNN model: {e}")
+            logger.error(f"Error loading ONNX model: {e}")
     
     def is_ready(self) -> bool:
         """Checks if the model has been loaded correctly."""
-        return self.model is not None and len(self.label_map) > 0
+        return self.session is not None and self.input_name is not None and len(self.label_map) > 0
     
     def predict_letter(self, tile_image: np.ndarray, confidence_threshold: float = 0.3) -> Optional[Tuple[str, float]]:
         """Predicts the letter of an individual tile.
@@ -157,8 +161,12 @@ class LetterDetectorCNN:
             # Add batch and channel dimensions
             input_data = np.expand_dims(normalized, axis=(0, -1))  # (1, 64, 64, 1)
             
-            # Prediction
-            prediction = self.model.predict(input_data, verbose=0)[0]
+            # Prediction with ONNX Runtime
+            # The input must be a dictionary where keys are input names
+            result = self.session.run(None, {self.input_name: input_data})
+            
+            # The output is a list of numpy arrays
+            prediction = result[0][0]
             confidence = float(np.max(prediction))
             class_idx = int(np.argmax(prediction))
             
@@ -177,7 +185,7 @@ class LetterDetectorCNN:
                 logger.warning(f"Class {class_idx} not found in label map")
                 return None
         except Exception as e:
-            logger.error(f"Error in CNN prediction: {e}")
+            logger.error(f"Error in ONNX prediction: {e}")
             return None
 
 
@@ -682,8 +690,7 @@ class WordsStreamGUI:
         # --- Logic to paste image (executes if focus is not on the entry, or if clipboard has no text) ---
 
         if not self.cnn_detector.is_ready():
-            messagebox.showerror("Error", "CNN not available!\nCheck if 'letter_detector_final.h5' model and 'label_map.json' are present.")
-            return "break"
+            messagebox.showerror("Error", "CNN not available!\nCheck if 'letter_detector_final.onnx' model and 'label_map.json' are present.")
 
         if not PILLOW_AVAILABLE:
             messagebox.showerror("Error", "Pillow not available!\nInstall: pip install pillow")

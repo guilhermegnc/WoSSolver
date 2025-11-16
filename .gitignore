@@ -1,3 +1,5 @@
 firebase-debug.log
 solver_v*.py
 __pycache__
+venv
+letter_detector_final.h5

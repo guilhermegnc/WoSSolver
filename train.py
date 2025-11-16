@@ -10,7 +10,7 @@ from tensorflow.keras import layers, models
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from sklearn.model_selection import train_test_split
 import json
-from segmentar import segment_letters as external_segment_letters
+from segment import segment_letters as external_segment_letters
 
 class LetterDetectionCNN:
     def __init__(self, img_size=64, num_classes=27):
