@@ -1,0 +1,4 @@
+1 - Change settings UI layout
+2 - Load dictionary in other thread
+3 - Settings persistency
+4 - Add English dictionary download link when file not present
