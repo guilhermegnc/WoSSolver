@@ -76,7 +76,7 @@ An advanced anagram solver for the "Words on Stream" game, featuring a graphical
 The application supports multiple languages for both the user interface and the dictionaries.
 
 - **UI Translations:** The UI strings are stored in `data/lang/ui_strings.json`. You can edit this file to add new languages or modify existing translations.
-- **Dictionaries:** Dictionaries are located in the `data/dictionaries/` directory. The application will load the dictionary corresponding to the language selected in the UI.
+- **Dictionaries:** Dictionaries are located in the `data/words/` directory. The application will load the dictionary corresponding to the language selected in the UI.
 - **Settings:** Your language preferences are saved in a `settings.json` file in the root directory.
 
 ## Model Training
@@ -84,10 +84,7 @@ The application supports multiple languages for both the user interface and the 
 The CNN model for letter detection can be trained using the `src/training/train.py` script.
 
 1. **Prepare the dataset:**
-   - Create a `data/dataset` directory in the root of the project.
-   - Inside the `dataset` directory, place individual images of each letter you want to train on.
-   - The images should be named after the letter they represent (e.g., `A.png`, `B.png`, `C.png`).
-   - Include an image for the wildcard/hidden letter, named `HIDDEN.png`.
+   - Use the dataset already present in `data/dataset`.
 
 2. **Run the training script:**
    ```sh
