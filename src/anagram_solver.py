@@ -31,12 +31,17 @@ class WordsStreamSolver:
         """Sets the dictionary language and reloads the dictionary."""
         self._load_dictionary(lang)
 
-    def _download_dictionary(self) -> Set[str]:
-        """Tries to download public PT-BR dictionaries. Returns a set of words."""
-        urls = [
-            "https://www.ime.usp.br/~pf/dicios/br-utf8.txt",
-            #"https://raw.githubusercontent.com/pythonprobr/palavras/master/palavras.txt",
-        ]
+    def _download_dictionary(self, lang: str) -> Set[str]:
+        """Tries to download public dictionaries for a given language. Returns a set of words."""
+        urls = []
+        if lang == 'pt':
+            urls.append("https://raw.githubusercontent.com/guilhermegnc/WoSSolver/main/data/words/words_pt.txt")
+        elif lang == 'en':
+            urls.append("https://raw.githubusercontent.com/guilhermegnc/WoSSolver/main/data/words/words_en.txt")
+        
+        if not urls:
+            logger.warning(f"No download URLs configured for language: {lang}")
+            return set()
 
         for url in urls:
             try:
@@ -110,8 +115,8 @@ class WordsStreamSolver:
             except Exception as e:
                 logger.warning(f"Error reading local dictionary: {e}")
 
-        if not words and lang == 'pt':
-            words = self._download_dictionary()
+        if not words:
+            words = self._download_dictionary(lang)
 
         if not words:
             logger.info("Using embedded basic dictionary")

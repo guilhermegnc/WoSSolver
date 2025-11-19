@@ -2,7 +2,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from collections import defaultdict
-from typing import List, Optional
+from typing import List, Optional, Tuple
 import re
 import io
 import os
@@ -142,7 +142,11 @@ class WordsStreamGUI:
         self.translations = {}
         self.current_lang = tk.StringVar(value='en')
         self.dictionary_lang = tk.StringVar(value='pt')
-        self.dictionary_lang.trace_add('write', self._on_dict_lang_change)
+        self.current_lang_display = tk.StringVar()
+        self.dictionary_lang_display = tk.StringVar()
+        self.settings_path = Path(__file__).parent.parent / "settings.json"
+        
+        # Load translations early for UI text setup
         self._load_translations()
 
         style = ttk.Style()
@@ -151,15 +155,55 @@ class WordsStreamGUI:
         except Exception:
             pass
 
-        self._create_interface()
+        self._create_interface() # Create widgets first
+        self._load_settings()    # Load settings (may updateStringVar values and spin_min)
+        
         self.current_lang.trace_add('write', self._on_lang_change)
+        self.dictionary_lang.trace_add('write', self._on_dict_lang_change) # Bind trace after settings are loaded
 
         # Bindings
         self.root.bind('<Control-v>', self.paste_image)
         self.root.bind('<Control-V>', self.paste_image)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
 
-        # Load initial dictionary
+        # Load initial dictionary (after all widgets are created and settings loaded)
         self._on_dict_lang_change()
+
+    def _on_closing(self):
+        """Called when the window is closed."""
+        self._save_settings()
+        self.root.destroy()
+
+    def _load_settings(self):
+        """Loads settings from the JSON file."""
+        try:
+            if self.settings_path.exists():
+                with open(self.settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                    self.current_lang.set(settings.get('ui_language', self.current_lang.get()))
+                    self.dictionary_lang.set(settings.get('dictionary_language', self.dictionary_lang.get()))
+                    self.spin_min.set(settings.get('min_length', self.spin_min.get()))
+                    
+                    geom = settings.get('geometry')
+                    if geom:
+                        self.root.geometry(geom)
+        except (IOError, json.JSONDecodeError) as e:
+            logger.warning(f"Could not load settings: {e}")
+
+    def _save_settings(self):
+        """Saves current settings to the JSON file."""
+        settings = {
+            'ui_language': self.current_lang.get(),
+            'dictionary_language': self.dictionary_lang.get(),
+            'min_length': self.spin_min.get(),
+            'geometry': self.root.geometry(),
+        }
+        try:
+            with open(self.settings_path, 'w', encoding='utf-8') as f:
+                json.dump(settings, f, indent=4)
+            logger.info(f"Settings saved to {self.settings_path}")
+        except IOError as e:
+            logger.warning(f"Could not save settings: {e}")
 
     def _create_interface(self):
         main_frame = ttk.Frame(self.root, padding=10)
@@ -171,20 +215,15 @@ class WordsStreamGUI:
 
         self.title_label = ttk.Label(top_frame, font=('Arial', 20, 'bold'))
         self.title_label.pack(side=tk.LEFT, expand=True, fill=tk.X)
-        
-        # Dictionary Language
-        dict_lang_options = ['pt', 'en']
-        self.dict_lang_menu = ttk.OptionMenu(top_frame, self.dictionary_lang, self.dictionary_lang.get(), *dict_lang_options)
-        self.dict_lang_menu.pack(side=tk.RIGHT, padx=(10, 0))
-        self.dict_lang_label = ttk.Label(top_frame, text="Dictionary:")
-        self.dict_lang_label.pack(side=tk.RIGHT)
 
-        # UI Language
-        lang_options = list(self.translations.keys()) if self.translations else ['en', 'pt']
-        self.lang_menu = ttk.OptionMenu(top_frame, self.current_lang, self.current_lang.get(), *lang_options)
-        self.lang_menu.pack(side=tk.RIGHT, padx=(10, 0))
-        self.lang_label = ttk.Label(top_frame, text="Language:")
-        self.lang_label.pack(side=tk.RIGHT)
+        # --- UI Language Frame ---
+        ui_lang_frame = ttk.Frame(top_frame)
+        ui_lang_frame.pack(side=tk.RIGHT, padx=5)
+
+        self.lang_label = ttk.Label(ui_lang_frame)
+        self.lang_label.grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.lang_menu = ttk.OptionMenu(ui_lang_frame, self.current_lang_display, "")
+        self.lang_menu.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=2)
 
         self.subtitle_label = ttk.Label(main_frame, font=('Arial', 10))
         self.subtitle_label.pack(fill=tk.X)
@@ -230,9 +269,22 @@ class WordsStreamGUI:
         self.label_letters = ttk.Label(self.input_frame, text="", font=('Arial', 11, 'bold'))
         self.label_letters.pack(pady=5)
 
-        self.result_frame = ttk.LabelFrame(main_frame, padding=10)
+        # --- Results Frame ---
+        self.result_frame = ttk.Frame(main_frame, padding=10) # Now a plain Frame
         self.result_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Header for Results Frame (contains Results label and Dict Language selector)
+        results_header_frame = ttk.Frame(self.result_frame)
+        results_header_frame.pack(fill=tk.X, pady=(0, 5))
+
+        self.results_title_label = ttk.Label(results_header_frame, font=('Arial', 12, 'bold')) # New Label for "Results"
+        self.results_title_label.pack(side=tk.LEFT, padx=5)
+
+        # Dictionary Language Selector (moved here)
+        self.dict_lang_menu = ttk.OptionMenu(results_header_frame, self.dictionary_lang_display, "")
+        self.dict_lang_menu.pack(side=tk.LEFT, padx=(10, 5))
+
+        # ScrolledText for results, packed into the main result_frame
         self.text_results = scrolledtext.ScrolledText(self.result_frame, font=('Courier', 10), wrap=tk.WORD, state='disabled')
         self.text_results.pack(fill=tk.BOTH, expand=True)
 
@@ -657,14 +709,74 @@ class WordsStreamGUI:
                 return val # Return unformatted if a key is missing
         return val
 
+    def _get_translated_lang_options_list(self, current_ui_lang: str) -> List[Tuple[str, str]]:
+        """Returns a list of (display_name, internal_value) for language options based on current UI language."""
+        if current_ui_lang == 'en':
+            return [
+                (self._get_string("english_display"), 'en'),
+                (self._get_string("portuguese_display"), 'pt')
+            ]
+        elif current_ui_lang == 'pt':
+            return [
+                (self._get_string("english_display"), 'en'),
+                (self._get_string("portuguese_display"), 'pt')
+            ]
+        # Fallback
+        return [
+            (self._get_string("english_display"), 'en'),
+            (self._get_string("portuguese_display"), 'pt')
+        ]
+
     def _on_lang_change(self, *args):
         """Callback when the language is changed."""
         self._update_ui_text()
 
     def _on_dict_lang_change(self, *args):
-        """Callback when the dictionary language is changed."""
-        lang = self.dictionary_lang.get()
-        self.solver.set_dictionary_language(lang)
+        """Callback when the dictionary language is changed. Loads in a thread."""
+        dict_lang_code = self.dictionary_lang.get()
+        
+        # Update the display variable for the dictionary menu
+        # This ensures the button text updates even if the UI language doesn't change
+        ui_lang_code = self.current_lang.get()
+        translated_options = self._get_translated_lang_options_list(ui_lang_code)
+        for display_name, internal_value in translated_options:
+            if internal_value == dict_lang_code:
+                self.dictionary_lang_display.set(display_name)
+                break
+
+        # Now, proceed with loading the dictionary
+        if hasattr(self, 'dict_lang_menu'): # Defensive check
+            self.dict_lang_menu.config(state='disabled')
+        if hasattr(self, 'solve_button'): # Defensive check
+            self.solve_button.config(state='disabled')
+        self.status_bar.config(text=self._get_string("status_loading_dictionary", lang=dict_lang_code))
+
+        Thread(target=self._load_dictionary_thread, args=(dict_lang_code,), daemon=True).start()
+
+    def _load_dictionary_thread(self, lang: str):
+        """Executes dictionary loading in a separate thread."""
+        try:
+            self.solver.set_dictionary_language(lang)
+            self.root.after(0, self._on_dictionary_loaded)
+        except Exception as e:
+            logger.error(f"Failed to load dictionary for '{lang}': {e}", exc_info=True)
+            self.root.after(0, lambda: messagebox.showerror(
+                self._get_string("error_title"),
+                self._get_string("error_loading_dictionary", lang=lang, e=e)
+            ))
+            # In case of error, restore UI state
+            self.root.after(0, lambda: self.status_bar.config(text=self._get_string("status_ready")))
+            self.root.after(0, lambda: self.dict_lang_menu.config(state='normal'))
+            if hasattr(self, 'solve_button'):
+                self.root.after(0, lambda: self.solve_button.config(state='normal'))
+
+    def _on_dictionary_loaded(self):
+        """Callback executed in the main thread after the dictionary is loaded."""
+        self.status_bar.config(text=self._get_string("status_dictionary_loaded", count=len(self.solver.words)))
+        if hasattr(self, 'dict_lang_menu'): # Defensive check
+            self.dict_lang_menu.config(state='normal')
+        if hasattr(self, 'solve_button'): # Defensive check
+            self.solve_button.config(state='normal')
 
     def _update_ui_text(self):
         """Updates all UI text elements with the current language."""
@@ -672,7 +784,6 @@ class WordsStreamGUI:
         self.title_label.config(text=self._get_string("main_title"))
         self.subtitle_label.config(text=self._get_string("subtitle"))
         self.lang_label.config(text=self._get_string("language_label"))
-        self.dict_lang_label.config(text=self._get_string("dictionary_label"))
         self.input_frame.config(text=self._get_string("input_frame"))
         self.paste_button.config(text=self._get_string("paste_button"))
         self.open_button.config(text=self._get_string("open_button"))
@@ -684,10 +795,42 @@ class WordsStreamGUI:
         self.false_letter_check.config(text=self._get_string("false_letter_check"))
         self.min_length_label.config(text=self._get_string("min_length_label"))
         self.solve_button.config(text=self._get_string("solve_button"))
-        self.result_frame.config(text=self._get_string("results_frame"))
+        self.results_title_label.config(text=self._get_string("results_title"))
         self.copy_button.config(text=self._get_string("copy_button"))
         self.save_button.config(text=self._get_string("save_button"))
         self.clear_button.config(text=self._get_string("clear_button"))
+
+        # Update UI Language Menu options
+        current_ui_lang_code = self.current_lang.get()
+        translated_ui_options = self._get_translated_lang_options_list(current_ui_lang_code)
+        
+        self.lang_menu['menu'].delete(0, 'end')
+        current_ui_display_name = ""
+        for display_name, internal_value in translated_ui_options:
+            self.lang_menu['menu'].add_command(
+                label=display_name,
+                command=tk._setit(self.current_lang, internal_value)
+            )
+            if internal_value == current_ui_lang_code:
+                current_ui_display_name = display_name
+        
+        self.current_lang_display.set(current_ui_display_name)
+        
+        # Update Dictionary Language Menu options
+        current_dict_lang_code = self.dictionary_lang.get()
+        translated_dict_options = self._get_translated_lang_options_list(current_ui_lang_code)
+        
+        self.dict_lang_menu['menu'].delete(0, 'end')
+        current_dict_display_name = ""
+        for display_name, internal_value in translated_dict_options:
+            self.dict_lang_menu['menu'].add_command(
+                label=display_name,
+                command=tk._setit(self.dictionary_lang, internal_value)
+            )
+            if internal_value == current_dict_lang_code:
+                current_dict_display_name = display_name
+        
+        self.dictionary_lang_display.set(current_dict_display_name)
         
         # Update status bar if it's in a default state
         if self.status_bar.cget("text") in [
